@@ -35,6 +35,16 @@ urlpatterns = [
         "api/v1/accounts/",
         include("apps.accounts.urls"),
     ),
+    # 分类模块接口
+    path(
+        "api/v1/categories/",
+        include("apps.categories.urls"),
+    ),
+    # 账单模块接口
+    path(
+        "api/v1/transactions/",
+        include("apps.transactions.urls"),
+    ),
 ]
 # 开发环境下由 Django 提供媒体文件访问。
 #

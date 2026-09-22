@@ -47,6 +47,8 @@ INSTALLED_APPS = [
     # 本地应用
     "apps.users.apps.UsersConfig",
     "apps.accounts.apps.AccountsConfig",
+    "apps.categories.apps.CategoriesConfig",
+    "apps.transactions.apps.TransactionsConfig",
 ]
 
 MIDDLEWARE = [
