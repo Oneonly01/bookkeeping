@@ -2,6 +2,7 @@
 from decimal import Decimal
 from django.db import transaction
 
+from django.db.models import Sum
 from common.exceptions.business import BusinessException
 
 # 导入账户模型。
@@ -759,3 +760,207 @@ class AccountService:
                 "updated_at",
             ]
         )
+
+    @staticmethod
+    def get_account_statistics(
+        user,
+    ):
+        """
+        获取当前用户账户资金分布统计。
+
+        统计内容：
+        1. 当前所有有效账户余额；
+        2. 总账户余额；
+        3. 每个账户余额占比。
+
+        只统计：
+        1. 当前用户自己的账户；
+        2. 未删除账户；
+        3. 启用状态账户。
+        """
+
+        # ==============================
+        # 查询当前用户有效账户
+        # ==============================
+
+        accounts = Account.objects.filter(
+            user=user,
+            is_deleted=False,
+            is_active=True,
+        ).order_by(
+            "sort_order",
+            "id",
+        )
+
+        # ==============================
+        # 计算所有账户总余额
+        # ==============================
+
+        total_result = accounts.aggregate(total_balance=Sum("balance"))
+
+        # 如果用户当前没有任何账户，
+        # Sum 会返回 None。
+        #
+        # 因此统一转换为 Decimal("0.00")。
+        total_balance = total_result["total_balance"] or Decimal("0.00")
+
+        # ==============================
+        # 构造账户统计结果
+        # ==============================
+
+        account_list = []
+
+        for account in accounts:
+            # 默认占比为 0。
+            percentage = Decimal("0.00")
+
+            # 总余额大于 0 时才计算比例。
+            #
+            # 避免出现除以 0 的异常。
+            if total_balance > 0:
+                percentage = account.balance / total_balance * Decimal("100")
+
+            # 百分比统一保留两位小数。
+            percentage = percentage.quantize(Decimal("0.01"))
+
+            # 构造当前账户统计信息。
+            account_list.append(
+                {
+                    "account_id": account.id,
+                    "account_name": account.name,
+                    "account_type": (account.account_type),
+                    "account_type_display": (account.get_account_type_display()),
+                    "balance": account.balance,
+                    "percentage": percentage,
+                    "is_default": account.is_default,
+                }
+            )
+
+        # ==============================
+        # 返回统计结果
+        # ==============================
+
+        return {
+            "total_balance": total_balance,
+            "accounts": account_list,
+        }
+
+    @staticmethod
+    def get_asset_summary(
+        user,
+    ):
+        """
+        获取当前用户的资产概览。
+
+        统计内容：
+        1. 总资产；
+        2. 总负债；
+        3. 净资产；
+        4. 有效账户数量；
+        5. 正余额账户数量；
+        6. 负余额账户数量。
+
+        统计范围：
+        1. 只统计当前登录用户；
+        2. 只统计未删除账户；
+        3. 只统计启用账户。
+        """
+
+        # ==========================================
+        # 查询当前用户所有有效账户
+        # ==========================================
+
+        accounts = Account.objects.filter(
+            user=user,
+            is_deleted=False,
+            is_active=True,
+        )
+
+        # ==========================================
+        # 初始化统计变量
+        # ==========================================
+
+        # 总资产。
+        #
+        # 所有余额大于 0 的账户余额之和。
+        total_assets = Decimal("0.00")
+
+        # 总负债。
+        #
+        # 所有余额小于 0 的账户，
+        # 取绝对值后进行累加。
+        total_liabilities = Decimal("0.00")
+
+        # 正余额账户数量。
+        asset_account_count = 0
+
+        # 负余额账户数量。
+        liability_account_count = 0
+
+        # ==========================================
+        # 遍历账户计算资产和负债
+        # ==========================================
+
+        for account in accounts:
+            # 获取当前账户余额。
+            balance = account.balance
+
+            # --------------------------------------
+            # 正余额：计入资产
+            # --------------------------------------
+
+            if balance > 0:
+                # 累加资产。
+                total_assets += balance
+
+                # 正余额账户数量 +1。
+                asset_account_count += 1
+
+            # --------------------------------------
+            # 负余额：计入负债
+            # --------------------------------------
+
+            elif balance < 0:
+                # 负数转成正数后计入负债。
+                #
+                # 例如：
+                # balance = -2000
+                #
+                # abs(balance) = 2000
+                total_liabilities += abs(balance)
+
+                # 负余额账户数量 +1。
+                liability_account_count += 1
+
+            # balance == 0 时，
+            # 不属于资产账户，也不属于负债账户，
+            # 但仍然属于有效账户。
+
+        # ==========================================
+        # 计算净资产
+        # ==========================================
+
+        # 净资产：
+        #
+        # 总资产 - 总负债
+        net_assets = total_assets - total_liabilities
+
+        # ==========================================
+        # 统计账户数量
+        # ==========================================
+
+        # 当前有效账户总数。
+        account_count = accounts.count()
+
+        # ==========================================
+        # 返回统计结果
+        # ==========================================
+
+        return {
+            "total_assets": total_assets,
+            "total_liabilities": total_liabilities,
+            "net_assets": net_assets,
+            "account_count": account_count,
+            "asset_account_count": (asset_account_count),
+            "liability_account_count": (liability_account_count),
+        }

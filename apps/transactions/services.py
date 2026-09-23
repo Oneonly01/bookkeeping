@@ -1,6 +1,8 @@
 from datetime import datetime, time
+from decimal import Decimal
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import Count, Q, Sum
+from django.db.models.functions import TruncDate, ExtractMonth
 from django.utils import timezone
 from common.exceptions import BusinessException
 
@@ -504,3 +506,811 @@ class TransactionService:
                 "updated_at",
             ]
         )
+
+    @staticmethod
+    def get_transaction_summary(
+        user,
+        query_params: dict,
+    ):
+        """
+        获取当前用户账单汇总数据。
+
+        支持按开始日期和结束日期进行统计。
+        """
+
+        # ==============================
+        # 基础查询
+        # ==============================
+
+        # 只统计：
+        # 1. 当前登录用户；
+        # 2. 状态正常的账单。
+        queryset = Transaction.objects.filter(
+            user=user,
+            status=Transaction.Status.NORMAL,
+        )
+
+        # ==============================
+        # 开始日期筛选
+        # ==============================
+
+        start_date = query_params.get("start_date")
+
+        if start_date:
+            # 转换为当天 00:00:00。
+            start_datetime = datetime.combine(
+                start_date,
+                time.min,
+            )
+
+            # 转换成 Django 当前时区时间。
+            start_datetime = timezone.make_aware(start_datetime)
+
+            queryset = queryset.filter(transaction_time__gte=start_datetime)
+
+        # ==============================
+        # 结束日期筛选
+        # ==============================
+
+        end_date = query_params.get("end_date")
+
+        if end_date:
+            # 转换为当天最后一刻。
+            end_datetime = datetime.combine(
+                end_date,
+                time.max,
+            )
+
+            # 转换成 Django 当前时区时间。
+            end_datetime = timezone.make_aware(end_datetime)
+
+            queryset = queryset.filter(transaction_time__lte=end_datetime)
+
+        # ==============================
+        # 收入统计
+        # ==============================
+
+        income_summary = queryset.filter(
+            transaction_type=(Transaction.TransactionType.INCOME)
+        ).aggregate(
+            total=Sum("amount"),
+            count=Count("id"),
+        )
+
+        # ==============================
+        # 支出统计
+        # ==============================
+
+        expense_summary = queryset.filter(
+            transaction_type=(Transaction.TransactionType.EXPENSE)
+        ).aggregate(
+            total=Sum("amount"),
+            count=Count("id"),
+        )
+
+        # ==============================
+        # 处理空数据
+        # ==============================
+
+        # 如果没有收入，
+        # Sum 会返回 None。
+        total_income = income_summary["total"] or Decimal("0.00")
+
+        # 如果没有支出，
+        # Sum 会返回 None。
+        total_expense = expense_summary["total"] or Decimal("0.00")
+
+        income_count = income_summary["count"]
+
+        expense_count = expense_summary["count"]
+
+        # ==============================
+        # 计算结余
+        # ==============================
+
+        balance = total_income - total_expense
+
+        # ==============================
+        # 返回汇总结果
+        # ==============================
+
+        return {
+            "total_income": total_income,
+            "total_expense": total_expense,
+            "balance": balance,
+            "income_count": income_count,
+            "expense_count": expense_count,
+            "total_count": (income_count + expense_count),
+        }
+
+    @staticmethod
+    def get_transaction_trend(
+        user,
+        query_params: dict,
+    ):
+        """
+        获取当前用户账单趋势数据。
+
+        按天统计：
+        1. 收入；
+        2. 支出；
+        3. 当日结余。
+        """
+
+        # ==============================
+        # 基础查询
+        # ==============================
+
+        # 只查询当前用户正常状态的账单。
+        queryset = Transaction.objects.filter(
+            user=user,
+            status=Transaction.Status.NORMAL,
+        )
+
+        # ==============================
+        # 开始日期
+        # ==============================
+
+        start_date = query_params.get("start_date")
+
+        if start_date:
+            # 转换为当天 00:00:00。
+            start_datetime = datetime.combine(
+                start_date,
+                time.min,
+            )
+
+            # 转成 Django 当前时区。
+            start_datetime = timezone.make_aware(start_datetime)
+
+            queryset = queryset.filter(transaction_time__gte=start_datetime)
+
+        # ==============================
+        # 结束日期
+        # ==============================
+
+        end_date = query_params.get("end_date")
+
+        if end_date:
+            # 转换为当天最后一刻。
+            end_datetime = datetime.combine(
+                end_date,
+                time.max,
+            )
+
+            # 转成 Django 当前时区。
+            end_datetime = timezone.make_aware(end_datetime)
+
+            queryset = queryset.filter(transaction_time__lte=end_datetime)
+
+        # ==============================
+        # 按日期聚合收入
+        # ==============================
+
+        income_queryset = (
+            queryset.filter(transaction_type=(Transaction.TransactionType.INCOME))
+            .annotate(date=TruncDate("transaction_time"))
+            .values("date")
+            .annotate(total=Sum("amount"))
+            .order_by("date")
+        )
+
+        # ==============================
+        # 按日期聚合支出
+        # ==============================
+
+        expense_queryset = (
+            queryset.filter(transaction_type=(Transaction.TransactionType.EXPENSE))
+            .annotate(date=TruncDate("transaction_time"))
+            .values("date")
+            .annotate(total=Sum("amount"))
+            .order_by("date")
+        )
+
+        # ==============================
+        # 转为日期 -> 金额字典
+        # ==============================
+
+        income_map = {
+            item["date"]: (item["total"] or Decimal("0.00")) for item in income_queryset
+        }
+
+        expense_map = {
+            item["date"]: (item["total"] or Decimal("0.00"))
+            for item in expense_queryset
+        }
+
+        # ==============================
+        # 合并所有存在账单的日期
+        # ==============================
+
+        all_dates = sorted(set(income_map.keys()) | set(expense_map.keys()))
+
+        # ==============================
+        # 生成趋势数据
+        # ==============================
+
+        trend_data = []
+
+        for current_date in all_dates:
+            # 当前日期收入。
+            income = income_map.get(
+                current_date,
+                Decimal("0.00"),
+            )
+
+            # 当前日期支出。
+            expense = expense_map.get(
+                current_date,
+                Decimal("0.00"),
+            )
+
+            # 当前日期结余。
+            balance = income - expense
+
+            trend_data.append(
+                {
+                    "date": current_date,
+                    "income": income,
+                    "expense": expense,
+                    "balance": balance,
+                }
+            )
+
+        return trend_data
+
+    @staticmethod
+    def get_category_statistics(
+        user,
+        query_params: dict,
+    ):
+        """
+        获取当前用户的分类统计数据。
+
+        统计内容：
+        1. 每个分类的金额；
+        2. 每个分类的账单数量；
+        3. 每个分类金额占总金额的百分比。
+
+        支持：
+        1. 收入统计；
+        2. 支出统计；
+        3. 日期范围统计。
+        """
+
+        # ==============================
+        # 获取查询参数
+        # ==============================
+
+        # 获取账单类型。
+        #
+        # expense：支出
+        # income：收入
+        transaction_type = query_params.get("transaction_type")
+
+        # 获取开始日期。
+        start_date = query_params.get("start_date")
+
+        # 获取结束日期。
+        end_date = query_params.get("end_date")
+
+        # ==============================
+        # 基础查询
+        # ==============================
+
+        # 只统计：
+        # 1. 当前登录用户；
+        # 2. 状态正常；
+        # 3. 指定收入/支出类型。
+        queryset = Transaction.objects.filter(
+            user=user,
+            status=Transaction.Status.NORMAL,
+            transaction_type=transaction_type,
+        )
+
+        # ==============================
+        # 开始日期筛选
+        # ==============================
+
+        if start_date:
+            # 将日期转换成当天 00:00:00。
+            #
+            # 例如：
+            # 2026-09-01
+            #
+            # 转成：
+            # 2026-09-01 00:00:00
+            start_datetime = datetime.combine(
+                start_date,
+                time.min,
+            )
+
+            # 转换成当前 Django 时区时间。
+            start_datetime = timezone.make_aware(start_datetime)
+
+            # 查询开始日期之后的账单。
+            queryset = queryset.filter(transaction_time__gte=start_datetime)
+
+        # ==============================
+        # 结束日期筛选
+        # ==============================
+
+        if end_date:
+            # 将结束日期转换成当天最后一刻。
+            #
+            # 例如：
+            # 2026-09-30
+            #
+            # 转成：
+            # 2026-09-30 23:59:59.999999
+            end_datetime = datetime.combine(
+                end_date,
+                time.max,
+            )
+
+            # 转换成 Django 当前时区时间。
+            end_datetime = timezone.make_aware(end_datetime)
+
+            # 查询结束日期之前的账单。
+            queryset = queryset.filter(transaction_time__lte=end_datetime)
+
+        # ==============================
+        # 计算总金额
+        # ==============================
+
+        # 汇总当前条件下全部账单金额。
+        total_result = queryset.aggregate(total_amount=Sum("amount"))
+
+        # 如果没有任何账单，
+        # Sum 会返回 None。
+        #
+        # 因此这里统一转成 Decimal("0.00")。
+        total_amount = total_result["total_amount"] or Decimal("0.00")
+
+        # ==============================
+        # 按分类分组统计
+        # ==============================
+
+        # 按 category_id 和 category__name 分组。
+        #
+        # 每组计算：
+        # 1. amount：总金额；
+        # 2. count：账单数量。
+        category_queryset = (
+            queryset.values(
+                "category_id",
+                "category__name",
+            )
+            .annotate(
+                amount=Sum("amount"),
+                count=Count("id"),
+            )
+            .order_by("-amount")
+        )
+
+        # ==============================
+        # 构造结果
+        # ==============================
+
+        categories = []
+
+        # 遍历每个分类的统计结果。
+        for item in category_queryset:
+            # 当前分类金额。
+            amount = item["amount"] or Decimal("0.00")
+
+            # 默认占比为 0。
+            percentage = Decimal("0.00")
+
+            # 总金额大于 0 时，
+            # 才计算百分比。
+            if total_amount > 0:
+                percentage = amount / total_amount * Decimal("100")
+
+            # 保留两位小数。
+            percentage = percentage.quantize(Decimal("0.01"))
+
+            # 加入最终结果。
+            categories.append(
+                {
+                    "category_id": (item["category_id"]),
+                    "category_name": (item["category__name"] or "未分类"),
+                    "amount": amount,
+                    "count": item["count"],
+                    "percentage": percentage,
+                }
+            )
+
+        # ==============================
+        # 返回统计数据
+        # ==============================
+
+        return {
+            "transaction_type": transaction_type,
+            "total_amount": total_amount,
+            "categories": categories,
+        }
+
+    @staticmethod
+    def get_monthly_statistics(
+        user,
+        query_params: dict,
+    ):
+        """
+        获取月度收支统计。
+
+        统计内容：
+
+        1. 当前月份收入；
+        2. 当前月份支出；
+        3. 当前月份结余；
+        4. 上一个月份收入；
+        5. 上一个月份支出；
+        6. 上一个月份结余；
+        7. 收入环比；
+        8. 支出环比。
+
+        如果没有传 month，
+        默认使用当前月份。
+        """
+
+        # ==========================================
+        # 获取目标月份
+        # ==========================================
+
+        month = query_params.get("month")
+
+        # 如果前端没有传 month，
+        # 默认获取当前系统日期。
+        if not month:
+            # timezone.localdate()
+            # 会按照 Django 当前时区获取今天日期。
+            current_date = timezone.localdate()
+
+            # 例如：
+            # 2026-09
+            month = current_date.strftime("%Y-%m")
+
+        # ==========================================
+        # 解析当前月份
+        # ==========================================
+
+        # 例如：
+        #
+        # month = 2026-09
+        #
+        # 解析成：
+        # datetime(2026, 9, 1)
+        current_month_date = datetime.strptime(
+            month,
+            "%Y-%m",
+        )
+
+        # 当前年份。
+        current_year = current_month_date.year
+
+        # 当前月份。
+        current_month = current_month_date.month
+
+        # ==========================================
+        # 计算上一个月份
+        # ==========================================
+
+        # 如果当前月份是 1 月，
+        # 上个月就是上一年的 12 月。
+        if current_month == 1:
+            previous_year = current_year - 1
+            previous_month = 12
+
+        else:
+            # 普通情况：
+            # 年份不变，
+            # 月份减 1。
+            previous_year = current_year
+            previous_month = current_month - 1
+
+        # ==========================================
+        # 当前月份基础 QuerySet
+        # ==========================================
+
+        current_queryset = Transaction.objects.filter(
+            # 只统计当前登录用户。
+            user=user,
+            # 只统计正常账单。
+            status=Transaction.Status.NORMAL,
+            # 当前年份。
+            transaction_time__year=current_year,
+            # 当前月份。
+            transaction_time__month=current_month,
+        )
+
+        # ==========================================
+        # 上个月基础 QuerySet
+        # ==========================================
+
+        previous_queryset = Transaction.objects.filter(
+            # 只统计当前登录用户。
+            user=user,
+            # 只统计正常账单。
+            status=Transaction.Status.NORMAL,
+            # 上一个月份所属年份。
+            transaction_time__year=previous_year,
+            # 上一个月份。
+            transaction_time__month=previous_month,
+        )
+
+        # ==========================================
+        # 当前月份收入
+        # ==========================================
+
+        current_income_result = current_queryset.filter(
+            transaction_type=(Transaction.TransactionType.INCOME)
+        ).aggregate(total=Sum("amount"))
+
+        # 如果没有收入，
+        # Sum 返回 None，
+        # 因此统一转换成 0。
+        current_income = current_income_result["total"] or Decimal("0.00")
+
+        # ==========================================
+        # 当前月份支出
+        # ==========================================
+
+        current_expense_result = current_queryset.filter(
+            transaction_type=(Transaction.TransactionType.EXPENSE)
+        ).aggregate(total=Sum("amount"))
+
+        current_expense = current_expense_result["total"] or Decimal("0.00")
+
+        # ==========================================
+        # 上个月收入
+        # ==========================================
+
+        previous_income_result = previous_queryset.filter(
+            transaction_type=(Transaction.TransactionType.INCOME)
+        ).aggregate(total=Sum("amount"))
+
+        previous_income = previous_income_result["total"] or Decimal("0.00")
+
+        # ==========================================
+        # 上个月支出
+        # ==========================================
+
+        previous_expense_result = previous_queryset.filter(
+            transaction_type=(Transaction.TransactionType.EXPENSE)
+        ).aggregate(total=Sum("amount"))
+
+        previous_expense = previous_expense_result["total"] or Decimal("0.00")
+
+        # ==========================================
+        # 计算结余
+        # ==========================================
+
+        # 本月结余。
+        current_balance = current_income - current_expense
+
+        # 上月结余。
+        previous_balance = previous_income - previous_expense
+
+        # ==========================================
+        # 计算收入环比
+        # ==========================================
+
+        # 默认收入环比为 None。
+        #
+        # None 表示：
+        # 上个月收入为 0，
+        # 无法正常计算百分比。
+        income_rate = None
+
+        if previous_income > 0:
+            income_rate = (
+                (current_income - previous_income) / previous_income * Decimal("100")
+            )
+
+            # 保留两位小数。
+            income_rate = income_rate.quantize(Decimal("0.01"))
+
+        # ==========================================
+        # 计算支出环比
+        # ==========================================
+
+        expense_rate = None
+
+        if previous_expense > 0:
+            expense_rate = (
+                (current_expense - previous_expense) / previous_expense * Decimal("100")
+            )
+
+            expense_rate = expense_rate.quantize(Decimal("0.01"))
+
+        # ==========================================
+        # 返回统计结果
+        # ==========================================
+
+        return {
+            # 当前月份。
+            "current_month": (f"{current_year:04d}-" f"{current_month:02d}"),
+            # 上一个月份。
+            "previous_month": (f"{previous_year:04d}-" f"{previous_month:02d}"),
+            # 当前月份数据。
+            "current": {
+                "income": current_income,
+                "expense": current_expense,
+                "balance": current_balance,
+            },
+            # 上一个月份数据。
+            "previous": {
+                "income": previous_income,
+                "expense": previous_expense,
+                "balance": previous_balance,
+            },
+            # 环比数据。
+            "comparison": {
+                "income_rate": income_rate,
+                "expense_rate": expense_rate,
+            },
+        }
+
+    @staticmethod
+    def get_yearly_statistics(
+        user,
+        query_params: dict,
+    ):
+        """
+        获取年度收支统计。
+
+        统计内容：
+
+        1. 全年总收入；
+        2. 全年总支出；
+        3. 全年总结余；
+        4. 1～12 月每月收入；
+        5. 1～12 月每月支出；
+        6. 1～12 月每月结余。
+
+        如果未传 year，
+        默认统计当前年份。
+        """
+
+        # ======================================
+        # 获取统计年份
+        # ======================================
+
+        year = query_params.get("year")
+
+        # 如果前端没有传 year，
+        # 使用当前年份。
+        if not year:
+            year = timezone.localdate().year
+
+        # ======================================
+        # 查询当前用户指定年份账单
+        # ======================================
+
+        queryset = Transaction.objects.filter(
+            # 只查询当前登录用户。
+            user=user,
+            # 只统计正常账单。
+            status=Transaction.Status.NORMAL,
+            # 指定年份。
+            transaction_time__year=year,
+        )
+
+        # ======================================
+        # 按月份统计收入
+        # ======================================
+
+        income_queryset = (
+            queryset.filter(transaction_type=(Transaction.TransactionType.INCOME))
+            # 从账单时间中提取月份。
+            .annotate(month=ExtractMonth("transaction_time"))
+            # 按月份进行分组。
+            .values("month")
+            # 汇总每个月收入。
+            .annotate(total=Sum("amount")).order_by("month")
+        )
+
+        # ======================================
+        # 按月份统计支出
+        # ======================================
+
+        expense_queryset = (
+            queryset.filter(transaction_type=(Transaction.TransactionType.EXPENSE))
+            # 从账单时间中提取月份。
+            .annotate(month=ExtractMonth("transaction_time"))
+            # 按月份分组。
+            .values("month")
+            # 汇总每个月支出。
+            .annotate(total=Sum("amount")).order_by("month")
+        )
+
+        # ======================================
+        # 转换成月份 -> 金额字典
+        # ======================================
+
+        # 例如：
+        #
+        # {
+        #     1: Decimal("4400.00"),
+        #     2: Decimal("4200.00"),
+        # }
+        income_map = {
+            item["month"]: (item["total"] or Decimal("0.00"))
+            for item in income_queryset
+        }
+
+        expense_map = {
+            item["month"]: (item["total"] or Decimal("0.00"))
+            for item in expense_queryset
+        }
+
+        # ======================================
+        # 初始化全年统计数据
+        # ======================================
+
+        total_income = Decimal("0.00")
+        total_expense = Decimal("0.00")
+
+        months = []
+
+        # ======================================
+        # 固定生成 1～12 月
+        # ======================================
+
+        for month in range(
+            1,
+            13,
+        ):
+            # 当前月份收入。
+            #
+            # 如果该月没有收入，
+            # 默认返回 0。
+            income = income_map.get(
+                month,
+                Decimal("0.00"),
+            )
+
+            # 当前月份支出。
+            expense = expense_map.get(
+                month,
+                Decimal("0.00"),
+            )
+
+            # 当前月份结余。
+            balance = income - expense
+
+            # 累加全年收入。
+            total_income += income
+
+            # 累加全年支出。
+            total_expense += expense
+
+            # 保存当前月份统计数据。
+            months.append(
+                {
+                    "month": month,
+                    "month_text": (f"{year:04d}-" f"{month:02d}"),
+                    "income": income,
+                    "expense": expense,
+                    "balance": balance,
+                }
+            )
+
+        # ======================================
+        # 计算全年结余
+        # ======================================
+
+        total_balance = total_income - total_expense
+
+        # ======================================
+        # 返回统计结果
+        # ======================================
+
+        return {
+            "year": year,
+            "total_income": total_income,
+            "total_expense": total_expense,
+            "total_balance": total_balance,
+            "months": months,
+        }

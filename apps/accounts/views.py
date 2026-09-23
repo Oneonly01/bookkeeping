@@ -207,7 +207,7 @@ class AccountDetailView(APIView):
         )
 
 
-class AccountBalanceAdjustView(APIView):
+class AccountBalanceAdjustmentView(APIView):
     """
     账户余额校准接口。
 
@@ -302,7 +302,7 @@ class AccountBalanceAdjustmentListView(APIView):
         )
 
 
-class TransferListCreateView(APIView):
+class AccountTransferListCreateView(APIView):
     """
     账户转账记录列表 / 新增接口。
 
@@ -371,7 +371,7 @@ class TransferListCreateView(APIView):
         )
 
 
-class TransferDetailView(APIView):
+class AccountTransferDetailView(APIView):
     """
     转账记录详情 / 撤销接口。
 
@@ -428,4 +428,136 @@ class TransferDetailView(APIView):
         return ApiResponse.success(
             message="转账记录撤销成功",
             data=None,
+        )
+
+
+class AccountStatisticsView(APIView):
+    """
+    账户资金分布统计接口。
+
+    用于：
+    1. 首页资产统计；
+    2. 账户资产分布图；
+    3. 各账户余额占比展示。
+    """
+
+    def get(
+        self,
+        request,
+    ):
+        """
+        获取当前用户账户资金统计。
+        """
+
+        # ==============================
+        # 调用账户 Service
+        # ==============================
+
+        statistics = AccountService.get_account_statistics(
+            user=request.user,
+        )
+
+        # ==============================
+        # 格式化账户数据
+        # ==============================
+
+        accounts = []
+
+        for item in statistics["accounts"]:
+            accounts.append(
+                {
+                    # 账户 ID。
+                    "account_id": (item["account_id"]),
+                    # 账户名称。
+                    "account_name": (item["account_name"]),
+                    # 账户类型代码。
+                    "account_type": (item["account_type"]),
+                    # 账户类型中文名称。
+                    "account_type_display": (item["account_type_display"]),
+                    # 当前余额。
+                    #
+                    # 金额统一返回两位小数字符串。
+                    "balance": (f"{item['balance']:.2f}"),
+                    # 当前账户余额占比。
+                    "percentage": (f"{item['percentage']:.2f}"),
+                    # 是否默认账户。
+                    "is_default": (item["is_default"]),
+                }
+            )
+
+        # ==============================
+        # 构造接口返回数据
+        # ==============================
+
+        data = {
+            # 所有有效账户余额总和。
+            "total_balance": (f"{statistics['total_balance']:.2f}"),
+            # 各账户统计数据。
+            "accounts": accounts,
+        }
+
+        # 返回统一响应格式。
+        return ApiResponse.success(
+            message="获取账户统计成功",
+            data=data,
+        )
+
+
+class AccountAssetSummaryView(APIView):
+    """
+    账户资产概览接口。
+
+    主要用于首页资产卡片展示：
+
+    1. 总资产；
+    2. 总负债；
+    3. 净资产；
+    4. 有效账户数量。
+    """
+
+    def get(
+        self,
+        request,
+    ):
+        """
+        获取当前登录用户的资产概览。
+        """
+
+        # ======================================
+        # 调用 Service 获取统计数据
+        # ======================================
+
+        summary = AccountService.get_asset_summary(
+            user=request.user,
+        )
+
+        # ======================================
+        # 构造返回数据
+        # ======================================
+
+        data = {
+            # 总资产。
+            #
+            # 金额统一返回两位小数字符串，
+            # 避免前端出现浮点数精度问题。
+            "total_assets": (f"{summary['total_assets']:.2f}"),
+            # 总负债。
+            "total_liabilities": (f"{summary['total_liabilities']:.2f}"),
+            # 净资产。
+            "net_assets": (f"{summary['net_assets']:.2f}"),
+            # 当前有效账户总数量。
+            "account_count": (summary["account_count"]),
+            # 正余额账户数量。
+            "asset_account_count": (summary["asset_account_count"]),
+            # 负余额账户数量。
+            "liability_account_count": (summary["liability_account_count"]),
+        }
+
+        # ======================================
+        # 返回统一响应结构
+        # ======================================
+
+        return ApiResponse.success(
+            message="获取资产概览成功",
+            data=data,
         )

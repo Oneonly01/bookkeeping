@@ -188,7 +188,7 @@ REST_FRAMEWORK = {
 SIMPLE_JWT = {
     # Access Token 有效时间
     # Access Token 用于正常业务接口访问
-    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=30),
+    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=60),
     # Refresh Token 有效时间
     # Access Token 过期以后，可以使用 Refresh Token 获取新 Token
     "REFRESH_TOKEN_LIFETIME": timedelta(days=7),
