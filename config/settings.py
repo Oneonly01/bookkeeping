@@ -49,6 +49,7 @@ INSTALLED_APPS = [
     "apps.accounts.apps.AccountsConfig",
     "apps.categories.apps.CategoriesConfig",
     "apps.transactions.apps.TransactionsConfig",
+    "apps.budgets",
 ]
 
 MIDDLEWARE = [

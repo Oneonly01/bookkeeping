@@ -45,6 +45,11 @@ urlpatterns = [
         "api/v1/transactions/",
         include("apps.transactions.urls"),
     ),
+    # 预算模块。
+    path(
+        "api/v1/budgets/",
+        include("apps.budgets.urls"),
+    ),
 ]
 # 开发环境下由 Django 提供媒体文件访问。
 #
