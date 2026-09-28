@@ -50,6 +50,11 @@ urlpatterns = [
         "api/v1/budgets/",
         include("apps.budgets.urls"),
     ),
+    # 存钱罐模块
+    path(
+        "api/v1/savings/",
+        include("apps.savings.urls"),
+    ),
 ]
 # 开发环境下由 Django 提供媒体文件访问。
 #
