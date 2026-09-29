@@ -1,5 +1,6 @@
 from django.db import transaction
-
+from decimal import Decimal
+from django.db.models import Sum
 from common.exceptions.business import BusinessException
 
 from .models import SavingsGoal, SavingsRecord
@@ -522,3 +523,221 @@ class SavingsGoalService:
             "-created_at",
             "-id",
         )
+
+    @staticmethod
+    @transaction.atomic
+    def pause_goal(
+        user,
+        goal_id: int,
+    ):
+        """
+        暂停储蓄目标。
+
+        业务规则：
+
+        1. 只能操作当前用户自己的目标；
+        2. 已删除目标不能操作；
+        3. 已完成目标不能暂停；
+        4. 已经暂停的目标不能重复暂停；
+        5. 使用行锁保证状态修改安全。
+        """
+
+        # ======================================
+        # 查询并锁定目标
+        # ======================================
+
+        goal = (
+            SavingsGoal.objects.select_for_update()
+            .filter(
+                id=goal_id,
+                user=user,
+                is_deleted=False,
+            )
+            .first()
+        )
+
+        if goal is None:
+            raise BusinessException("储蓄目标不存在")
+
+        # ======================================
+        # 已完成目标不能暂停
+        # ======================================
+
+        if goal.status == SavingsGoal.Status.COMPLETED:
+            raise BusinessException("已完成的储蓄目标不能暂停")
+
+        # ======================================
+        # 防止重复暂停
+        # ======================================
+
+        if goal.status == SavingsGoal.Status.PAUSED:
+            raise BusinessException("储蓄目标已经处于暂停状态")
+
+        # ======================================
+        # 修改状态
+        # ======================================
+
+        goal.status = SavingsGoal.Status.PAUSED
+
+        goal.save(
+            update_fields=[
+                "status",
+                "updated_at",
+            ]
+        )
+
+        return goal
+
+    @staticmethod
+    @transaction.atomic
+    def resume_goal(
+        user,
+        goal_id: int,
+    ):
+        """
+        恢复储蓄目标。
+
+        业务规则：
+
+        1. 只能操作当前用户自己的目标；
+        2. 已删除目标不能操作；
+        3. 只有暂停状态才能恢复；
+        4. 恢复后状态变为 active；
+        5. 使用行锁保证状态修改安全。
+        """
+
+        # ======================================
+        # 查询并锁定目标
+        # ======================================
+
+        goal = (
+            SavingsGoal.objects.select_for_update()
+            .filter(
+                id=goal_id,
+                user=user,
+                is_deleted=False,
+            )
+            .first()
+        )
+
+        if goal is None:
+            raise BusinessException("储蓄目标不存在")
+
+        # ======================================
+        # 已完成目标不能恢复
+        # ======================================
+
+        if goal.status == SavingsGoal.Status.COMPLETED:
+            raise BusinessException("已完成的储蓄目标不能恢复")
+
+        # ======================================
+        # 只有暂停状态才能恢复
+        # ======================================
+
+        if goal.status != SavingsGoal.Status.PAUSED:
+            raise BusinessException("储蓄目标当前不是暂停状态")
+
+        # ======================================
+        # 恢复进行中
+        # ======================================
+
+        goal.status = SavingsGoal.Status.ACTIVE
+
+        goal.save(
+            update_fields=[
+                "status",
+                "updated_at",
+            ]
+        )
+
+        return goal
+
+    @staticmethod
+    def get_summary(
+        user,
+    ):
+        """
+        获取当前用户储蓄目标汇总数据。
+
+        统计范围：
+
+        1. 只统计当前用户；
+        2. 不统计已逻辑删除目标；
+        3. 分别统计进行中、暂停、完成数量；
+        4. 汇总目标金额、当前已存金额；
+        5. 计算剩余总金额；
+        6. 计算整体储蓄完成率。
+        """
+
+        # ======================================
+        # 查询当前用户有效储蓄目标
+        # ======================================
+
+        goals = SavingsGoal.objects.filter(
+            user=user,
+            is_deleted=False,
+        )
+
+        # ======================================
+        # 目标数量
+        # ======================================
+
+        total_count = goals.count()
+
+        active_count = goals.filter(status=(SavingsGoal.Status.ACTIVE)).count()
+
+        paused_count = goals.filter(status=(SavingsGoal.Status.PAUSED)).count()
+
+        completed_count = goals.filter(status=(SavingsGoal.Status.COMPLETED)).count()
+
+        # ======================================
+        # 汇总目标金额
+        # ======================================
+
+        amount_summary = goals.aggregate(
+            target_amount=Sum("target_amount"),
+            current_amount=Sum("current_amount"),
+        )
+
+        total_target_amount = amount_summary["target_amount"] or Decimal("0.00")
+
+        total_current_amount = amount_summary["current_amount"] or Decimal("0.00")
+
+        # ======================================
+        # 计算剩余金额
+        # ======================================
+
+        remaining_amount = total_target_amount - total_current_amount
+
+        # 如果用户存在超额储蓄，
+        # 剩余金额最低返回 0。
+        if remaining_amount < 0:
+            remaining_amount = Decimal("0.00")
+
+        # ======================================
+        # 计算总体完成率
+        # ======================================
+
+        if total_target_amount > 0:
+            progress_percentage = (
+                total_current_amount / total_target_amount * Decimal("100")
+            )
+
+            progress_percentage = progress_percentage.quantize(Decimal("0.01"))
+        else:
+            progress_percentage = Decimal("0.00")
+
+        # ======================================
+        # 返回结果
+        # ======================================
+
+        return {
+            "total_count": total_count,
+            "active_count": active_count,
+            "paused_count": paused_count,
+            "completed_count": completed_count,
+            "total_target_amount": (f"{total_target_amount:.2f}"),
+            "total_current_amount": (f"{total_current_amount:.2f}"),
+            "remaining_amount": (f"{remaining_amount:.2f}"),
+            "progress_percentage": (f"{progress_percentage:.2f}"),
+        }

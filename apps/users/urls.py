@@ -6,6 +6,9 @@ from .views import (
     CurrentUserView,
     LoginView,
     LogoutView,
+    PasswordResetSendCodeView,
+    PasswordResetVerifyCodeView,
+    PasswordResetView,
     RefreshTokenView,
     RegisterView,
 )
@@ -74,5 +77,20 @@ urlpatterns = [
         AvatarUploadView.as_view(),
         # 路由名称。
         name="user-avatar",
+    ),
+    path(
+        "password-reset/send-code/",
+        PasswordResetSendCodeView.as_view(),
+        name="password-reset-send-code",
+    ),
+    path(
+        "password-reset/verify-code/",
+        PasswordResetVerifyCodeView.as_view(),
+        name="password-reset-verify-code",
+    ),
+    path(
+        "password-reset/",
+        PasswordResetView.as_view(),
+        name="password-reset",
     ),
 ]

@@ -4,8 +4,11 @@ from .views import (
     SavingsGoalDepositView,
     SavingsGoalDetailView,
     SavingsGoalListCreateView,
+    SavingsGoalPauseView,
     SavingsGoalRecordListView,
+    SavingsGoalResumeView,
     SavingsGoalWithdrawView,
+    SavingsSummaryView,
 )
 
 urlpatterns = [
@@ -53,5 +56,29 @@ urlpatterns = [
         "goals/<int:goal_id>/",
         SavingsGoalDetailView.as_view(),
         name="savings-goal-detail",
+    ),
+    # ==========================================
+    # 暂停储蓄目标
+    # ==========================================
+    path(
+        "goals/<int:goal_id>/pause/",
+        SavingsGoalPauseView.as_view(),
+        name="savings-goal-pause",
+    ),
+    # ==========================================
+    # 恢复储蓄目标
+    # ==========================================
+    path(
+        "goals/<int:goal_id>/resume/",
+        SavingsGoalResumeView.as_view(),
+        name="savings-goal-resume",
+    ),
+    # ==========================================
+    # 储蓄汇总
+    # ==========================================
+    path(
+        "summary/",
+        SavingsSummaryView.as_view(),
+        name="savings-summary",
     ),
 ]

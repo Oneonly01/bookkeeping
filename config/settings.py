@@ -51,6 +51,7 @@ INSTALLED_APPS = [
     "apps.transactions.apps.TransactionsConfig",
     "apps.budgets",
     "apps.savings",
+    "apps.dashboard",
 ]
 
 MIDDLEWARE = [
@@ -103,7 +104,47 @@ DATABASES = {
         },
     }
 }
+# ==========================================
+# Redis Cache
+# ==========================================
+# 用于存储：
+# 1. 找回密码验证码；
+# 2. 密码重置临时 Token；
+# 3. 后续其它短期缓存数据。
+#
+# 当前使用本机 Redis：
+# 127.0.0.1:6379
+#
+# /1 表示使用 Redis 的 1 号数据库，
+# 避免与其它 Redis 数据混在一起。
+# ==========================================
+REDIS_HOST = os.getenv(
+    "REDIS_HOST",
+    "127.0.0.1",
+)
 
+REDIS_PORT = os.getenv(
+    "REDIS_PORT",
+    "6379",
+)
+
+REDIS_PASSWORD = os.getenv(
+    "REDIS_PASSWORD",
+    "",
+)
+
+REDIS_DB = os.getenv(
+    "REDIS_DB",
+    "1",
+)
+CACHES = {
+    "default": {
+        "BACKEND": ("django.core.cache.backends.redis.RedisCache"),
+        "LOCATION": (
+            f"redis://:{REDIS_PASSWORD}" f"@{REDIS_HOST}:{REDIS_PORT}" f"/{REDIS_DB}"
+        ),
+    }
+}
 
 # Password validation
 # https://docs.djangoproject.com/en/5.2/ref/settings/#auth-password-validators

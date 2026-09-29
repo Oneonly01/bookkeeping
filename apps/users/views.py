@@ -1,6 +1,7 @@
 from rest_framework.permissions import AllowAny
 from rest_framework.views import APIView
 
+from apps.users.password_reset_service import PasswordResetService
 from common.response import ApiResponse
 
 from .serializers import (
@@ -8,6 +9,9 @@ from .serializers import (
     ChangePasswordSerializer,
     LoginSerializer,
     LogoutSerializer,
+    PasswordResetSendCodeSerializer,
+    PasswordResetSerializer,
+    PasswordResetVerifyCodeSerializer,
     RefreshTokenSerializer,
     RegisterSerializer,
     UpdateUserProfileSerializer,
@@ -470,4 +474,116 @@ class AvatarUploadView(APIView):
         return ApiResponse.success(
             message="头像上传成功",
             data=user_data,
+        )
+
+
+class PasswordResetSendCodeView(APIView):
+    """
+    发送找回密码验证码。
+    """
+
+    # 用户忘记密码时没有 Token，
+    # 所以该接口必须允许匿名访问。
+    permission_classes = [AllowAny]
+
+    def post(
+        self,
+        request,
+    ):
+        """
+        发送验证码。
+        """
+
+        serializer = PasswordResetSendCodeSerializer(data=request.data)
+
+        serializer.is_valid(raise_exception=True)
+
+        user, code = PasswordResetService.send_code(
+            account=(serializer.validated_data["account"])
+        )
+
+        data = {"account": (serializer.validated_data["account"])}
+
+        # ======================================
+        # 开发环境临时返回验证码
+        # ======================================
+        #
+        # 注意：
+        # 正式生产环境绝对不能返回验证码。
+        #
+        # 现在项目还没有接短信/邮件服务，
+        # 为了方便 Apifox 调试，
+        # 暂时返回 debug_code。
+        #
+        # 等后面部署时必须删除。
+        # ======================================
+
+        from django.conf import settings
+
+        if settings.DEBUG:
+            data["debug_code"] = code
+
+        return ApiResponse.success(
+            message="验证码发送成功",
+            data=data,
+        )
+
+
+class PasswordResetVerifyCodeView(APIView):
+    """
+    校验找回密码验证码。
+    """
+
+    permission_classes = [AllowAny]
+
+    def post(
+        self,
+        request,
+    ):
+        """
+        验证验证码。
+        """
+
+        serializer = PasswordResetVerifyCodeSerializer(data=request.data)
+
+        serializer.is_valid(raise_exception=True)
+
+        reset_token = PasswordResetService.verify_code(
+            account=(serializer.validated_data["account"]),
+            code=(serializer.validated_data["code"]),
+        )
+
+        return ApiResponse.success(
+            message="验证码校验成功",
+            data={"reset_token": (reset_token)},
+        )
+
+
+class PasswordResetView(APIView):
+    """
+    重置密码接口。
+    """
+
+    permission_classes = [AllowAny]
+
+    def post(
+        self,
+        request,
+    ):
+        """
+        使用临时凭证重置密码。
+        """
+
+        serializer = PasswordResetSerializer(data=request.data)
+
+        serializer.is_valid(raise_exception=True)
+
+        PasswordResetService.reset_password(
+            reset_token=(serializer.validated_data["reset_token"]),
+            new_password=(serializer.validated_data["new_password"]),
+        )
+
+        return ApiResponse.success(
+            message="密码重置成功",
+            data=None,
         )

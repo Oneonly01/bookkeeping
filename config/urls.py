@@ -55,6 +55,11 @@ urlpatterns = [
         "api/v1/savings/",
         include("apps.savings.urls"),
     ),
+    # 首页模块
+    path(
+        "api/v1/dashboard/",
+        include("apps.dashboard.urls"),
+    ),
 ]
 # 开发环境下由 Django 提供媒体文件访问。
 #

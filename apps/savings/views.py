@@ -301,3 +301,88 @@ class SavingsGoalRecordListView(APIView):
             message="获取储蓄流水成功",
             data=serializer.data,
         )
+
+
+class SavingsGoalPauseView(APIView):
+    """
+    暂停储蓄目标接口。
+    """
+
+    def post(
+        self,
+        request,
+        goal_id,
+    ):
+        """
+        暂停储蓄目标。
+        """
+
+        goal = SavingsGoalService.pause_goal(
+            user=request.user,
+            goal_id=goal_id,
+        )
+
+        serializer = SavingsGoalSerializer(goal)
+
+        return ApiResponse.success(
+            message="暂停储蓄目标成功",
+            data=serializer.data,
+        )
+
+
+class SavingsGoalResumeView(APIView):
+    """
+    恢复储蓄目标接口。
+    """
+
+    def post(
+        self,
+        request,
+        goal_id,
+    ):
+        """
+        恢复储蓄目标。
+        """
+
+        goal = SavingsGoalService.resume_goal(
+            user=request.user,
+            goal_id=goal_id,
+        )
+
+        serializer = SavingsGoalSerializer(goal)
+
+        return ApiResponse.success(
+            message="恢复储蓄目标成功",
+            data=serializer.data,
+        )
+
+
+class SavingsSummaryView(APIView):
+    """
+    储蓄目标汇总统计接口。
+    """
+
+    def get(
+        self,
+        request,
+    ):
+        """
+        获取当前用户储蓄汇总数据。
+        """
+
+        # ======================================
+        # 调用业务层
+        # ======================================
+
+        summary = SavingsGoalService.get_summary(
+            user=request.user,
+        )
+
+        # ======================================
+        # 返回统一响应
+        # ======================================
+
+        return ApiResponse.success(
+            message="获取储蓄汇总成功",
+            data=summary,
+        )

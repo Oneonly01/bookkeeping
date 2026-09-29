@@ -791,3 +791,64 @@ class AvatarUploadSerializer(serializers.Serializer):
 
         # 校验通过。
         return value
+
+
+class PasswordResetSendCodeSerializer(serializers.Serializer):
+    """
+    发送找回密码验证码。
+    """
+
+    account = serializers.CharField(
+        max_length=150,
+    )
+
+
+class PasswordResetVerifyCodeSerializer(serializers.Serializer):
+    """
+    校验找回密码验证码。
+    """
+
+    account = serializers.CharField(
+        max_length=150,
+    )
+
+    code = serializers.CharField(
+        min_length=6,
+        max_length=6,
+    )
+
+
+class PasswordResetSerializer(serializers.Serializer):
+    """
+    重置密码。
+    """
+
+    reset_token = serializers.CharField()
+
+    new_password = serializers.CharField(
+        write_only=True,
+    )
+
+    confirm_password = serializers.CharField(
+        write_only=True,
+    )
+
+    def validate(
+        self,
+        attrs,
+    ):
+        """
+        校验两次密码。
+        """
+
+        new_password = attrs["new_password"]
+
+        confirm_password = attrs["confirm_password"]
+
+        if new_password != confirm_password:
+            raise serializers.ValidationError("两次输入的密码不一致")
+
+        # 使用 Django 默认密码安全规则。
+        validate_password(new_password)
+
+        return attrs
