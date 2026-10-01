@@ -60,6 +60,21 @@ urlpatterns = [
         "api/v1/dashboard/",
         include("apps.dashboard.urls"),
     ),
+    # 商品模块
+    path(
+        "api/v1/products/",
+        include("apps.products.urls"),
+    ),
+    # 标签模块
+    path(
+        "api/v1/tags/",
+        include("apps.tags.urls"),
+    ),
+    # 用户偏好设置模块
+    path(
+        "api/v1/preferences/",
+        include("apps.preferences.urls"),
+    ),
 ]
 # 开发环境下由 Django 提供媒体文件访问。
 #

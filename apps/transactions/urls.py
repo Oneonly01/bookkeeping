@@ -3,6 +3,8 @@ from django.urls import path
 from .views import (
     TransactionCategoryStatisticsView,
     TransactionDetailView,
+    TransactionImageDeleteView,
+    TransactionImageUploadView,
     TransactionListCreateView,
     TransactionMonthlyStatisticsView,
     TransactionSummaryView,
@@ -121,5 +123,39 @@ urlpatterns = [
         "yearly-statistics/",
         TransactionYearlyStatisticsView.as_view(),
         name="transaction-yearly-statistics",
+    ),
+    # ==========================================
+    # 账单图片列表 / 上传
+    # ==========================================
+    # GET：
+    # 获取指定账单下的全部图片列表。
+    #
+    # POST：
+    # 为指定账单上传一张图片。
+    #
+    # 说明：
+    # 1. 账单必须属于当前用户；
+    # 2. 图片仅允许 JPG、JPEG、PNG、WEBP；
+    # 3. 单张图片大小不能超过 5MB。
+    path(
+        "<int:transaction_id>/images/",
+        TransactionImageUploadView.as_view(),
+        name="transaction-image-upload",
+    ),
+    # ==========================================
+    # 删除账单图片
+    # ==========================================
+    # DELETE：
+    # 删除指定账单下的指定图片。
+    #
+    # 说明：
+    # 1. 账单必须属于当前用户；
+    # 2. 图片必须属于该账单；
+    # 3. 图片必须属于当前用户；
+    # 4. 删除数据库记录的同时删除实际图片文件。
+    path(
+        "<int:transaction_id>/images/<int:image_id>/",
+        TransactionImageDeleteView.as_view(),
+        name="transaction-image-delete",
     ),
 ]

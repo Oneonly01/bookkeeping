@@ -4,12 +4,13 @@ from django.db import transaction
 from django.db.models import Count, Q, Sum
 from django.db.models.functions import TruncDate, ExtractMonth
 from django.utils import timezone
+from apps.tags.models import Tag
 from common.exceptions import BusinessException
 
 from apps.accounts.models import Account
 from apps.categories.models import Category
 
-from .models import Transaction
+from .models import Transaction, TransactionImage
 
 
 class TransactionService:
@@ -30,20 +31,53 @@ class TransactionService:
         1. 账户必须属于当前用户；
         2. 分类必须是系统分类或当前用户自己的分类；
         3. 分类类型必须和账单类型一致；
-        4. 支出扣减账户余额；
-        5. 收入增加账户余额；
-        6. 余额更新和账单创建必须在同一事务。
+        4. 标签必须属于当前用户且未删除；
+        5. 支出扣减账户余额；
+        6. 收入增加账户余额；
+        7. 余额更新、账单创建、标签绑定必须在同一事务。
         """
 
-        account_id = validated_data["account_id"]
+        # ==========================================
+        # 拷贝请求参数
+        # ==========================================
+        #
+        # 不直接修改 serializer.validated_data，
+        # 避免对后续代码产生副作用。
+        # ==========================================
 
-        category_id = validated_data["category_id"]
+        data = validated_data.copy()
 
-        transaction_type = validated_data["transaction_type"]
+        # ==========================================
+        # 取出标签 ID
+        # ==========================================
+        #
+        # tag_ids 不是 Transaction 普通数据库字段，
+        # 需要单独处理。
+        #
+        # 新增账单未传 tag_ids 时默认没有标签。
+        # ==========================================
 
-        amount = validated_data["amount"]
+        tag_ids = data.pop(
+            "tag_ids",
+            [],
+        )
 
-        # 锁定账户。
+        # ==========================================
+        # 获取基础参数
+        # ==========================================
+
+        account_id = data["account_id"]
+
+        category_id = data["category_id"]
+
+        transaction_type = data["transaction_type"]
+
+        amount = data["amount"]
+
+        # ==========================================
+        # 锁定账户
+        # ==========================================
+
         try:
             account = Account.objects.select_for_update().get(
                 id=account_id,
@@ -55,7 +89,10 @@ class TransactionService:
         except Account.DoesNotExist:
             raise BusinessException("账户不存在")
 
-        # 查询分类。
+        # ==========================================
+        # 查询分类
+        # ==========================================
+
         category_filter = Q(
             id=category_id,
             user__isnull=True,
@@ -76,13 +113,60 @@ class TransactionService:
         except Category.DoesNotExist:
             raise BusinessException("分类不存在")
 
-        # 分类类型必须与账单类型一致。
+        # ==========================================
+        # 分类类型校验
+        # ==========================================
+
         if category.category_type != transaction_type:
             raise BusinessException("分类类型与账单类型不一致")
 
-        # 支出。
+        # ==========================================
+        # 校验标签
+        # ==========================================
+        #
+        # 标签只能使用：
+        #
+        # 1. 当前登录用户自己的标签；
+        # 2. 未逻辑删除的标签。
+        #
+        # 如果 tag_ids = []，
+        # 则表示该账单不绑定标签。
+        # ==========================================
+
+        tags = []
+
+        if tag_ids:
+            tags = list(
+                Tag.objects.filter(
+                    id__in=tag_ids,
+                    user=user,
+                    is_deleted=False,
+                )
+            )
+
+            # Serializer 已经做了 ID 去重，
+            # 这里再次 set() 属于防御性处理。
+            #
+            # 如果数量不同，说明存在：
+            # - 不存在的标签；
+            # - 已删除标签；
+            # - 其他用户的标签。
+            if len(tags) != len(set(tag_ids)):
+                raise BusinessException("存在无效标签")
+
+        # ==========================================
+        # 处理账户余额
+        # ==========================================
+
         if transaction_type == Transaction.TransactionType.EXPENSE:
+            # ======================================
+            # 支出
+            # ======================================
+            #
             # 非信用卡账户余额不足时禁止支出。
+            # 信用卡允许出现负余额。
+            # ======================================
+
             is_credit_card = account.account_type == Account.AccountType.CREDIT_CARD
 
             if not is_credit_card and account.balance < amount:
@@ -90,11 +174,17 @@ class TransactionService:
 
             account.balance -= amount
 
-        # 收入。
         else:
+            # ======================================
+            # 收入
+            # ======================================
+
             account.balance += amount
 
-        # 保存账户余额。
+        # ==========================================
+        # 保存账户余额
+        # ==========================================
+
         account.save(
             update_fields=[
                 "balance",
@@ -102,23 +192,37 @@ class TransactionService:
             ]
         )
 
-        # 创建账单。
+        # ==========================================
+        # 创建账单
+        # ==========================================
+
         transaction_record = Transaction.objects.create(
             user=user,
             account=account,
             category=category,
             transaction_type=(transaction_type),
             amount=amount,
-            transaction_time=(validated_data["transaction_time"]),
-            merchant=validated_data.get(
+            transaction_time=(data["transaction_time"]),
+            merchant=data.get(
                 "merchant",
                 "",
             ),
-            note=validated_data.get(
+            note=data.get(
                 "note",
                 "",
             ),
         )
+
+        # ==========================================
+        # 绑定账单标签
+        # ==========================================
+        #
+        # ManyToManyField 必须等 Transaction
+        # 保存并获得主键之后才能调用 set()。
+        # ==========================================
+
+        if tags:
+            transaction_record.tags.set(tags)
 
         return transaction_record
 
@@ -262,50 +366,157 @@ class TransactionService:
         修改账单。
 
         核心流程：
+
         1. 锁定原账单；
-        2. 锁定涉及账户；
-        3. 回滚原账单余额影响；
-        4. 校验新账户、新分类；
-        5. 应用新账单余额影响；
-        6. 更新账单记录。
+        2. 处理标签修改参数；
+        3. 校验标签；
+        4. 锁定涉及账户；
+        5. 回滚原账单余额影响；
+        6. 校验新账户、新分类；
+        7. 应用新账单余额影响；
+        8. 更新账单记录；
+        9. 更新账单标签。
+
+        标签规则：
+
+        不传 tag_ids：
+            保持原标签不变。
+
+        tag_ids = []：
+            清空全部标签。
+
+        tag_ids = [1, 2]：
+            替换为标签 1、2。
         """
 
+        # ==========================================
+        # 拷贝请求参数
+        # ==========================================
+        #
+        # 不直接修改 serializer.validated_data。
+        # ==========================================
+
+        data = validated_data.copy()
+
+        # ==========================================
+        # 判断本次是否修改标签
+        # ==========================================
+
+        has_tag_update = "tag_ids" in data
+
+        # tag_ids 不是 Transaction 普通字段，
+        # 单独取出。
+        tag_ids = data.pop(
+            "tag_ids",
+            None,
+        )
+
+        # ==========================================
+        # 锁定原账单
+        # ==========================================
+
         try:
-            # 锁定原账单，防止并发修改。
             old_transaction = Transaction.objects.select_for_update().get(
                 id=transaction_id,
                 user=user,
-                status=Transaction.Status.NORMAL,
+                status=(Transaction.Status.NORMAL),
             )
 
         except Transaction.DoesNotExist:
             raise BusinessException("账单不存在")
 
+        # ==========================================
+        # 校验新标签
+        # ==========================================
+        #
+        # tags = None：
+        # 本次没有修改标签。
+        #
+        # tags = []：
+        # 本次清空标签。
+        #
+        # tags = [Tag, Tag]：
+        # 替换为新的标签。
+        # ==========================================
+
+        tags = None
+
+        if has_tag_update:
+            # ======================================
+            # tag_ids = []
+            # 表示清空全部标签
+            # ======================================
+
+            if not tag_ids:
+                tags = []
+
+            else:
+                # ==================================
+                # 查询当前用户合法标签
+                # ==================================
+
+                tags = list(
+                    Tag.objects.filter(
+                        id__in=tag_ids,
+                        user=user,
+                        is_deleted=False,
+                    )
+                )
+
+                # ==================================
+                # 标签数量校验
+                # ==================================
+                #
+                # 如果传：
+                #
+                # [1, 2, 999]
+                #
+                # 但数据库只能找到：
+                #
+                # [1, 2]
+                #
+                # 则说明存在：
+                #
+                # 1. 不存在的标签；
+                # 2. 已删除标签；
+                # 3. 其他用户标签。
+                # ==================================
+
+                if len(tags) != len(set(tag_ids)):
+                    raise BusinessException("存在无效标签")
+
+        # ==========================================
+        # 获取修改后的数据
+        # ==========================================
+
         # 修改后的账户 ID。
-        new_account_id = validated_data.get(
+        new_account_id = data.get(
             "account_id",
             old_transaction.account_id,
         )
 
         # 修改后的分类 ID。
-        new_category_id = validated_data.get(
+        new_category_id = data.get(
             "category_id",
             old_transaction.category_id,
         )
 
         # 修改后的账单类型。
-        new_transaction_type = validated_data.get(
+        new_transaction_type = data.get(
             "transaction_type",
             old_transaction.transaction_type,
         )
 
         # 修改后的金额。
-        new_amount = validated_data.get(
+        new_amount = data.get(
             "amount",
             old_transaction.amount,
         )
 
-        # 锁定旧账户和新账户。
+        # ==========================================
+        # 锁定旧账户和新账户
+        # ==========================================
+
         account_ids = sorted(
             set(
                 [
@@ -328,7 +539,9 @@ class TransactionService:
         account_map = {account.id: account for account in accounts}
 
         old_account_missing = old_transaction.account_id not in account_map
+
         new_account_missing = new_account_id not in account_map
+
         if old_account_missing or new_account_missing:
             raise BusinessException("账户不存在")
 
@@ -336,23 +549,27 @@ class TransactionService:
 
         new_account = account_map[new_account_id]
 
-        # ==============================
-        # 回滚原账单
-        # ==============================
+        # ==========================================
+        # 回滚原账单余额影响
+        # ==========================================
 
         if old_transaction.transaction_type == Transaction.TransactionType.EXPENSE:
-            # 原来是支出，
-            # 当时扣了钱，现在先加回来。
+            # 原账单是支出。
+            #
+            # 创建账单时扣除了余额，
+            # 修改前先加回来。
             old_account.balance += old_transaction.amount
 
         else:
-            # 原来是收入，
-            # 当时加了钱，现在先扣回来。
+            # 原账单是收入。
+            #
+            # 创建时增加了余额，
+            # 修改前先减回来。
             old_account.balance -= old_transaction.amount
 
-        # ==============================
+        # ==========================================
         # 校验新分类
-        # ==============================
+        # ==========================================
 
         category_filter = Q(
             id=new_category_id,
@@ -374,47 +591,44 @@ class TransactionService:
         except Category.DoesNotExist:
             raise BusinessException("分类不存在")
 
+        # ==========================================
+        # 分类类型必须与账单类型一致
+        # ==========================================
+
         if new_category.category_type != new_transaction_type:
             raise BusinessException("分类类型与账单类型不一致")
 
-        # ==============================
-        # 应用新账单
-        # ==============================
+        # ==========================================
+        # 应用修改后的账单余额影响
+        # ==========================================
 
         if new_transaction_type == Transaction.TransactionType.EXPENSE:
+            # ======================================
+            # 支出
+            # ======================================
+
             is_credit_card = new_account.account_type == Account.AccountType.CREDIT_CARD
 
+            # 非信用卡余额不足时禁止支出。
             if not is_credit_card and new_account.balance < new_amount:
                 raise BusinessException("账户余额不足")
 
             new_account.balance -= new_amount
 
         else:
+            # ======================================
+            # 收入
+            # ======================================
+
             new_account.balance += new_amount
 
-        # 保存旧账户。
-        old_account.save(
-            update_fields=[
-                "balance",
-                "updated_at",
-            ]
-        )
+        # ==========================================
+        # 保存账户余额
+        # ==========================================
 
-        # 如果新旧账户不同，
-        # 还需要保存新账户。
+        # 如果是不同账户，
+        # 分别保存两个账户。
         if new_account.id != old_account.id:
-            new_account.save(
-                update_fields=[
-                    "balance",
-                    "updated_at",
-                ]
-            )
-
-        # 如果是同一个账户，
-        # 前面的 old_account 和 new_account
-        # 实际上是同一个对象，
-        # 再保存一次最终余额即可。
-        else:
             old_account.save(
                 update_fields=[
                     "balance",
@@ -422,9 +636,40 @@ class TransactionService:
                 ]
             )
 
-        # ==============================
-        # 更新账单
-        # ==============================
+            new_account.save(
+                update_fields=[
+                    "balance",
+                    "updated_at",
+                ]
+            )
+
+        else:
+            # ======================================
+            # 同一个账户
+            # ======================================
+            #
+            # old_account 和 new_account
+            # 实际是同一个 Python 对象。
+            #
+            # 此时余额已经完成：
+            #
+            # 回滚旧账单
+            # +
+            # 应用新账单
+            #
+            # 保存一次即可。
+            # ======================================
+
+            old_account.save(
+                update_fields=[
+                    "balance",
+                    "updated_at",
+                ]
+            )
+
+        # ==========================================
+        # 更新账单主体数据
+        # ==========================================
 
         old_transaction.account = new_account
 
@@ -434,16 +679,52 @@ class TransactionService:
 
         old_transaction.amount = new_amount
 
-        if "transaction_time" in validated_data:
-            old_transaction.transaction_time = validated_data["transaction_time"]
+        # ==========================================
+        # 修改交易时间
+        # ==========================================
 
-        if "merchant" in validated_data:
-            old_transaction.merchant = validated_data["merchant"]
+        if "transaction_time" in data:
+            old_transaction.transaction_time = data["transaction_time"]
 
-        if "note" in validated_data:
-            old_transaction.note = validated_data["note"]
+        # ==========================================
+        # 修改商户
+        # ==========================================
+
+        if "merchant" in data:
+            old_transaction.merchant = data["merchant"]
+
+        # ==========================================
+        # 修改备注
+        # ==========================================
+
+        if "note" in data:
+            old_transaction.note = data["note"]
+
+        # ==========================================
+        # 保存账单
+        # ==========================================
 
         old_transaction.save()
+
+        # ==========================================
+        # 更新标签
+        # ==========================================
+        #
+        # 只有请求中真的传了 tag_ids
+        # 才修改标签。
+        #
+        # 不传：
+        # 原标签保持不变。
+        #
+        # []：
+        # set([]) 会清空标签。
+        #
+        # [1, 2]：
+        # 替换为指定标签。
+        # ==========================================
+
+        if has_tag_update:
+            old_transaction.tags.set(tags)
 
         return old_transaction
 
@@ -1314,3 +1595,145 @@ class TransactionService:
             "total_balance": total_balance,
             "months": months,
         }
+
+    @staticmethod
+    @transaction.atomic
+    def upload_transaction_image(
+        user,
+        transaction_id: int,
+        image,
+    ) -> TransactionImage:
+        """
+        上传账单图片。
+
+        规则：
+        1. 账单必须属于当前用户；
+        2. 账单必须处于正常状态；
+        3. 图片记录归属当前用户；
+        4. 图片与账单建立关联；
+        5. 整个过程放在事务中执行。
+        """
+
+        # ==========================================
+        # 查询账单
+        # ==========================================
+
+        try:
+            transaction_record = Transaction.objects.select_for_update().get(
+                id=transaction_id,
+                user=user,
+                status=Transaction.Status.NORMAL,
+            )
+
+        except Transaction.DoesNotExist:
+            raise BusinessException("账单不存在")
+
+        # ==========================================
+        # 创建账单图片记录
+        # ==========================================
+
+        image_record = TransactionImage.objects.create(
+            transaction=transaction_record,
+            user=user,
+            image=image,
+        )
+
+        return image_record
+
+    @staticmethod
+    @transaction.atomic
+    def delete_transaction_image(
+        user,
+        transaction_id: int,
+        image_id: int,
+    ) -> None:
+        """
+        删除账单图片。
+
+        规则：
+        1. 账单必须属于当前用户；
+        2. 图片必须属于该账单；
+        3. 图片必须属于当前用户；
+        4. 删除数据库记录；
+        5. 同时删除磁盘上的图片文件。
+        """
+
+        # ==========================================
+        # 查询账单
+        # ==========================================
+
+        try:
+            transaction_record = Transaction.objects.select_for_update().get(
+                id=transaction_id,
+                user=user,
+                status=Transaction.Status.NORMAL,
+            )
+
+        except Transaction.DoesNotExist:
+            raise BusinessException("账单不存在")
+
+        # ==========================================
+        # 查询账单图片
+        # ==========================================
+
+        try:
+            image_record = TransactionImage.objects.select_for_update().get(
+                id=image_id,
+                transaction=transaction_record,
+                user=user,
+            )
+
+        except TransactionImage.DoesNotExist:
+            raise BusinessException("账单图片不存在")
+
+        # ==========================================
+        # 删除磁盘文件
+        # ==========================================
+
+        if image_record.image:
+            image_record.image.delete(save=False)
+
+        # ==========================================
+        # 删除数据库记录
+        # ==========================================
+
+        image_record.delete()
+
+    @staticmethod
+    def list_transaction_images(
+        user,
+        transaction_id: int,
+    ):
+        """
+        获取指定账单的图片列表。
+
+        规则：
+        1. 账单必须属于当前用户；
+        2. 账单必须处于正常状态；
+        3. 只返回该账单自己的图片。
+        """
+
+        # ==========================================
+        # 查询账单
+        # ==========================================
+
+        try:
+            transaction_record = Transaction.objects.get(
+                id=transaction_id,
+                user=user,
+                status=Transaction.Status.NORMAL,
+            )
+
+        except Transaction.DoesNotExist:
+            raise BusinessException("账单不存在")
+
+        # ==========================================
+        # 查询图片
+        # ==========================================
+
+        images = TransactionImage.objects.filter(
+            transaction=transaction_record,
+            user=user,
+        ).order_by("-created_at")
+
+        return images

@@ -49,9 +49,17 @@ INSTALLED_APPS = [
     "apps.accounts.apps.AccountsConfig",
     "apps.categories.apps.CategoriesConfig",
     "apps.transactions.apps.TransactionsConfig",
-    "apps.budgets",
-    "apps.savings",
-    "apps.dashboard",
+    "apps.budgets.apps.BudgetsConfig",
+    "apps.savings.apps.SavingsConfig",
+    "apps.dashboard.apps.DashboardConfig",
+    "apps.products.apps.ProductsConfig",
+    "apps.tags.apps.TagsConfig",
+    # "apps.budgets",
+    # "apps.savings",
+    # "apps.dashboard",
+    # "apps.products",
+    # "apps.tags",
+    "apps.preferences.apps.PreferencesConfig",
 ]
 
 MIDDLEWARE = [

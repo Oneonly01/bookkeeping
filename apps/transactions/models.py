@@ -65,6 +65,16 @@ class Transaction(models.Model):
         verbose_name="分类",
         db_comment="账单关联分类",
     )
+    # ==========================================
+    # 账单标签
+    # ==========================================
+
+    tags = models.ManyToManyField(
+        "tags.Tag",
+        related_name="transactions",
+        blank=True,
+        verbose_name="标签",
+    )
 
     # ==============================
     # 账单核心字段
@@ -197,3 +207,69 @@ class Transaction(models.Model):
         """
 
         return f"{self.get_transaction_type_display()} " f"{self.amount}"
+
+
+class TransactionImage(models.Model):
+    """
+    账单图片。
+
+    一条账单可以关联多张图片，
+    例如：
+
+    1. 消费小票；
+    2. 支付截图；
+    3. 发票照片；
+    4. 其他记账凭证。
+    """
+
+    transaction = models.ForeignKey(
+        Transaction,
+        on_delete=models.CASCADE,
+        related_name="images",
+        verbose_name="账单",
+    )
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="transaction_images",
+        verbose_name="用户",
+    )
+
+    image = models.ImageField(
+        upload_to="transactions/%Y/%m/",
+        verbose_name="账单图片",
+    )
+
+    created_at = models.DateTimeField(
+        auto_now_add=True,
+        verbose_name="创建时间",
+    )
+
+    class Meta:
+        db_table = "transaction_image"
+
+        verbose_name = "账单图片"
+
+        verbose_name_plural = "账单图片"
+
+        ordering = [
+            "-created_at",
+        ]
+
+        indexes = [
+            models.Index(
+                fields=[
+                    "transaction",
+                    "user",
+                ]
+            ),
+        ]
+
+    def __str__(self):
+        return (
+            f"TransactionImage("
+            f"transaction_id={self.transaction_id}, "
+            f"id={self.id}"
+            f")"
+        )

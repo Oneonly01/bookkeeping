@@ -3,10 +3,12 @@ from rest_framework.views import APIView
 from apps.accounts.services import AccountService
 from common.pagination.pagination import StandardPagination
 from common.response import ApiResponse
-
+from rest_framework.parsers import MultiPartParser, FormParser
 from .serializers import (
     TransactionCategoryStatisticsQuerySerializer,
     TransactionCreateSerializer,
+    TransactionImageSerializer,
+    TransactionImageUploadSerializer,
     TransactionMonthlyStatisticsQuerySerializer,
     TransactionQuerySerializer,
     TransactionSerializer,
@@ -685,4 +687,110 @@ class TransactionYearlyStatisticsView(APIView):
         return ApiResponse.success(
             message="获取年度统计成功",
             data=data,
+        )
+
+
+class TransactionImageUploadView(APIView):
+    """
+    账单图片接口。
+
+    GET：
+    获取图片列表。
+
+    POST：
+    上传图片。
+    """
+
+    parser_classes = [
+        MultiPartParser,
+        FormParser,
+    ]
+
+    def get(
+        self,
+        request,
+        transaction_id: int,
+    ):
+        """
+        获取账单图片列表。
+        """
+
+        images = TransactionService.list_transaction_images(
+            user=request.user,
+            transaction_id=transaction_id,
+        )
+
+        serializer = TransactionImageSerializer(
+            images,
+            many=True,
+            context={
+                "request": request,
+            },
+        )
+
+        return ApiResponse.success(
+            data=serializer.data,
+            message="获取账单图片列表成功",
+        )
+
+    def post(
+        self,
+        request,
+        transaction_id: int,
+    ):
+        """
+        上传账单图片。
+        """
+
+        serializer = TransactionImageUploadSerializer(
+            data=request.data,
+        )
+
+        serializer.is_valid(
+            raise_exception=True,
+        )
+
+        image_record = TransactionService.upload_transaction_image(
+            user=request.user,
+            transaction_id=transaction_id,
+            image=serializer.validated_data["image"],
+        )
+
+        response_serializer = TransactionImageSerializer(
+            image_record,
+            context={
+                "request": request,
+            },
+        )
+
+        return ApiResponse.success(
+            data=response_serializer.data,
+            message="账单图片上传成功",
+        )
+
+
+class TransactionImageDeleteView(APIView):
+    """
+    删除账单图片。
+    """
+
+    def delete(
+        self,
+        request,
+        transaction_id: int,
+        image_id: int,
+    ):
+        """
+        删除指定账单图片。
+        """
+
+        TransactionService.delete_transaction_image(
+            user=request.user,
+            transaction_id=transaction_id,
+            image_id=image_id,
+        )
+
+        return ApiResponse.success(
+            data=None,
+            message="账单图片删除成功",
         )
