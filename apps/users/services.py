@@ -15,6 +15,7 @@ from common.exceptions.business import BusinessException
 
 # 导入用户扩展资料模型。
 from .models import UserProfile
+from apps.preferences.services import PreferenceService
 
 
 class AuthService:
@@ -80,6 +81,8 @@ class UserService:
         :return: 用户资料字典
         """
 
+        preference = PreferenceService.get_or_create_preference(user)
+
         # 尝试获取当前用户关联的 UserProfile。
         profile = getattr(user, "profile", None)
 
@@ -99,7 +102,7 @@ class UserService:
                 "gender": 0,
                 "gender_display": "未知",
                 "birthday": None,
-                "currency": "CNY",
+                "currency": preference.currency,
                 "timezone": "Asia/Shanghai",
             }
 
@@ -130,7 +133,7 @@ class UserService:
             # 生日。
             "birthday": profile.birthday,
             # 默认货币。
-            "currency": profile.currency,
+            "currency": preference.currency,
             # 时区。
             "timezone": profile.timezone,
         }
@@ -218,6 +221,11 @@ class UserService:
 
         # 保存用户扩展资料。
         profile.save()
+        if "currency" in validated_data:
+            PreferenceService.update_preference(
+                user=user,
+                validated_data={"currency": profile.currency},
+            )
 
         # 修改成功后，
         # 统一调用已经存在的获取用户资料方法，

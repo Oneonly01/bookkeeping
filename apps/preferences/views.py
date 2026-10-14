@@ -77,6 +77,7 @@ class PreferenceView(APIView):
         serializer = UserPreferenceSerializer(
             data=request.data,
             partial=True,
+            context={"request": request},
         )
 
         serializer.is_valid(

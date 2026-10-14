@@ -1,3 +1,5 @@
+from common.utils.idempotency import idempotent_request
+
 from rest_framework.views import APIView
 
 from common.response import ApiResponse
@@ -192,6 +194,7 @@ class SavingsGoalDepositView(APIView):
     储蓄目标存入资金接口。
     """
 
+    @idempotent_request
     def post(
         self,
         request,
@@ -237,6 +240,7 @@ class SavingsGoalWithdrawView(APIView):
     储蓄目标取出资金接口。
     """
 
+    @idempotent_request
     def post(
         self,
         request,

@@ -10,12 +10,38 @@ from .views import (
     TransactionSummaryView,
     TransactionTrendView,
     TransactionYearlyStatisticsView,
+    TransactionExportView,
+    TransactionRecycleBinView,
+    TransactionRestoreView,
+)
+
+from .recurring_views import (
+    RecurringExecutionListView,
+    RecurringTransactionDetailView,
+    RecurringTransactionListCreateView,
+    RecurringTransactionRunView,
 )
 
 app_name = "transactions"
 
 
 urlpatterns = [
+    # ==========================================
+    # 周期账单模板 / 执行记录 / 手动执行
+    # ==========================================
+    path("recurring/", RecurringTransactionListCreateView.as_view(), name="recurring-list-create"),
+    path("recurring/<int:template_id>/", RecurringTransactionDetailView.as_view(), name="recurring-detail"),
+    path("recurring/<int:template_id>/run/", RecurringTransactionRunView.as_view(), name="recurring-run"),
+    path("recurring/<int:template_id>/executions/", RecurringExecutionListView.as_view(), name="recurring-executions"),
+    # ==========================================
+    # 导出 / 回收站 / 账单恢复
+    # ==========================================
+    # GET export/：下载筛选后的全部正常账单CSV。
+    # GET recycle-bin/：查看当前用户已删除账单。
+    # POST {id}/restore/：恢复账单并重新校验余额。
+    path("export/", TransactionExportView.as_view(), name="transaction-export"),
+    path("recycle-bin/", TransactionRecycleBinView.as_view(), name="transaction-recycle-bin"),
+    path("<int:transaction_id>/restore/", TransactionRestoreView.as_view(), name="transaction-restore"),
     # ==========================================
     # 账单列表 / 新增账单
     # ==========================================

@@ -1,5 +1,7 @@
 from rest_framework import serializers
 
+from apps.accounts.models import Account
+
 from .models import UserPreference
 
 
@@ -97,6 +99,26 @@ class UserPreferenceSerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
         ]
+
+    def __init__(self, *args, **kwargs):
+        """默认账户只接受当前用户的有效账户，避免越权设置。"""
+        super().__init__(*args, **kwargs)
+        request = self.context.get("request")
+        queryset = Account.objects.none()
+        if request and request.user.is_authenticated:
+            queryset = Account.objects.filter(
+                user=request.user,
+                is_deleted=False,
+                is_active=True,
+            )
+        self.fields["default_account"].queryset = queryset
+
+    def validate_currency(self, value):
+        """统一使用三位大写货币代码；不改变已有账单金额。"""
+        value = value.strip().upper()
+        if len(value) != 3 or not value.isascii() or not value.isalpha():
+            raise serializers.ValidationError("货币代码必须是三位字母，例如CNY")
+        return value
 
     # ==========================================
     # 校验预算提醒阈值

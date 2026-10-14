@@ -1,3 +1,5 @@
+from uuid import uuid4
+
 from django.contrib.auth import authenticate
 from rest_framework import serializers
 
@@ -328,11 +330,10 @@ class RegisterSerializer(serializers.Serializer):
         # 取出手机号。
         phone = validated_data.pop("phone")
 
-        # 取出昵称。
-        nickname = validated_data.pop(
-            "nickname",
-            "",
-        )
+        # 未传昵称或昵称为空时生成随机昵称。
+        nickname = validated_data.pop("nickname", None)
+        if not nickname:
+            nickname = f"用户{uuid4().hex[:8]}"
 
         # 使用 create_user 创建 Django 用户。
         #
@@ -430,10 +431,9 @@ class UpdateUserProfileSerializer(serializers.Serializer):
     nickname = serializers.CharField(
         max_length=50,
         required=False,
-        allow_blank=False,
+        allow_blank=True,
         trim_whitespace=True,
         error_messages={
-            "blank": "昵称不能为空",
             "max_length": "昵称长度不能超过50个字符",
         },
     )
@@ -498,6 +498,14 @@ class UpdateUserProfileSerializer(serializers.Serializer):
         # 如果存在 request，
         # 保存当前登录用户。
         self.user = request.user if request else None
+
+    def validate_nickname(self, value):
+        """
+        昵称为空时生成随机昵称；未传字段时保留原昵称。
+        """
+        if not value:
+            return f"用户{uuid4().hex[:8]}"
+        return value
 
     def validate_email(self, value):
         """

@@ -73,7 +73,8 @@ class BudgetCreateSerializer(serializers.Serializer):
         min_value=Decimal("0.01"),
         max_value=Decimal("100.00"),
         required=False,
-        default=Decimal("80.00"),
+        default=None,
+        allow_null=True,
     )
 
     # ==========================================
@@ -173,6 +174,7 @@ class BudgetUpdateSerializer(serializers.Serializer):
         min_value=Decimal("0.01"),
         max_value=Decimal("100.00"),
         required=False,
+        allow_null=True,
     )
 
     # 备注。

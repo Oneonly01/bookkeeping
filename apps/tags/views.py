@@ -5,6 +5,7 @@ from common.response import ApiResponse
 from .serializers import (
     TagCreateSerializer,
     TagSerializer,
+    TagUpdateSerializer,
 )
 from .services import TagService
 
@@ -71,8 +72,36 @@ class TagDetailView(APIView):
     """
     标签详情操作。
 
-    当前只提供 DELETE。
+    GET：查询详情。
+    PUT：修改名称、颜色，未传字段保持原值。
+    DELETE：逻辑删除。
     """
+
+    def get(self, request, tag_id):
+        """查询标签详情。"""
+        tag = TagService.get_tag_detail(
+            user=request.user,
+            tag_id=tag_id,
+        )
+        return ApiResponse.success(
+            message="获取标签详情成功",
+            data=TagSerializer(tag).data,
+        )
+
+    def put(self, request, tag_id):
+        """修改标签。"""
+        serializer = TagUpdateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        tag = TagService.update_tag(
+            user=request.user,
+            tag_id=tag_id,
+            validated_data=serializer.validated_data,
+        )
+        return ApiResponse.success(
+            message="修改标签成功",
+            data=TagSerializer(tag).data,
+        )
 
     def delete(
         self,

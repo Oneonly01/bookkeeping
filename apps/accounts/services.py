@@ -7,6 +7,7 @@ from common.exceptions.business import BusinessException
 
 # 导入账户模型。
 from .models import Account, AccountBalanceAdjustment, Transfer
+from apps.preferences.services import PreferenceService
 
 
 class AccountService:
@@ -40,6 +41,9 @@ class AccountService:
         :return:
             创建成功的 Account 对象。
         """
+
+        # 默认账户切换和偏好更新在同一用户锁内完成。
+        PreferenceService.lock_user(user)
 
         # 获取是否设置为默认账户。
         is_default = validated_data.get(
@@ -95,6 +99,9 @@ class AccountService:
             # 是否默认账户。
             is_default=is_default,
         )
+
+        # 同步偏好中的默认账户，避免两处配置不一致。
+        PreferenceService.get_or_create_preference(user)
 
         # 返回账户对象。
         return account
@@ -160,6 +167,8 @@ class AccountService:
         4. 不允许通过本接口修改账户余额。
         """
 
+        PreferenceService.lock_user(user)
+
         # 先通过统一方法获取当前用户账户。
         account = AccountService.get_account(
             user=user,
@@ -207,8 +216,13 @@ class AccountService:
         if "is_active" in validated_data:
             account.is_active = validated_data["is_active"]
 
-        # 保存修改。
+        # 停用账户不能继续作为默认账户。
+        if not account.is_active:
+            account.is_default = False
+
+        # 保存修改，并同步偏好中的默认账户。
         account.save()
+        PreferenceService.get_or_create_preference(user)
 
         return account
 
@@ -228,6 +242,8 @@ class AccountService:
         4. 如果删除的是默认账户，
         自动设置其他账户为新的默认账户。
         """
+
+        PreferenceService.lock_user(user)
 
         # 获取当前用户自己的账户。
         account = AccountService.get_account(
@@ -290,6 +306,9 @@ class AccountService:
                         "updated_at",
                     ]
                 )
+
+        # 删除及自动选择新默认账户后，同步用户偏好。
+        PreferenceService.get_or_create_preference(user)
 
     @staticmethod
     @transaction.atomic

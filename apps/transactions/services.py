@@ -11,6 +11,7 @@ from apps.accounts.models import Account
 from apps.categories.models import Category
 
 from .models import Transaction, TransactionImage
+from apps.preferences.services import PreferenceService
 
 
 class TransactionService:
@@ -66,7 +67,10 @@ class TransactionService:
         # 获取基础参数
         # ==========================================
 
-        account_id = data["account_id"]
+        # 未传账户时应用用户默认账户；传入账户仍以请求为准。
+        account_id = data.get("account_id")
+        if account_id is None:
+            account_id = PreferenceService.get_default_account(user).id
 
         category_id = data["category_id"]
 
@@ -181,6 +185,10 @@ class TransactionService:
 
             account.balance += amount
 
+        # 金额字段最多14位、两位小数，自动记账同样不能越界。
+        if abs(account.balance) > Decimal("999999999999.99"):
+            raise BusinessException("账户余额超出允许范围")
+
         # ==========================================
         # 保存账户余额
         # ==========================================
@@ -230,6 +238,7 @@ class TransactionService:
     def get_transaction_list(
         user,
         query_params: dict,
+        status=Transaction.Status.NORMAL,
     ):
         """
         获取当前用户账单列表。
@@ -245,7 +254,7 @@ class TransactionService:
         # 只查询当前用户正常账单。
         queryset = Transaction.objects.filter(
             user=user,
-            status=Transaction.Status.NORMAL,
+            status=status,
         ).select_related(
             "account",
             "category",
@@ -277,6 +286,19 @@ class TransactionService:
 
         if category_id:
             queryset = queryset.filter(category_id=category_id)
+
+        # ==============================
+        # 标签筛选 / 用户隔离
+        # ==============================
+        tag_id = query_params.get("tag_id")
+        if tag_id is not None:
+            if not Tag.objects.filter(
+                id=tag_id,
+                user=user,
+                is_deleted=False,
+            ).exists():
+                raise BusinessException("标签不存在")
+            queryset = queryset.filter(tags__id=tag_id).distinct()
 
         # ==============================
         # 开始日期
@@ -787,6 +809,73 @@ class TransactionService:
                 "updated_at",
             ]
         )
+
+    @staticmethod
+    @transaction.atomic
+    def restore_transaction(
+        user,
+        transaction_id: int,
+        validated_data: dict,
+    ) -> Transaction:
+        """
+        恢复误删账单，并重新应用余额变化。
+
+        规则：
+        1. 只能恢复当前用户已删除账单；
+        2. 原账户、分类不可用时允许指定有效替代项；
+        3. 普通账户恢复支出仍需余额充足，信用卡允许负余额；
+        4. 锁定账单和账户，保证状态与余额同一事务更新；
+        5. 保留原ID、图片和标签关系，不创建第二条账单。
+        """
+        # ======================================
+        # 锁定已删除账单 / 验证当前用户
+        # ======================================
+        record = Transaction.objects.select_for_update().filter(
+            id=transaction_id,
+            user=user,
+            status=Transaction.Status.DELETED,
+        ).first()
+        if record is None:
+            raise BusinessException("已删除账单不存在")
+
+        account_id = validated_data.get("account_id", record.account_id)
+        category_id = validated_data.get("category_id", record.category_id)
+        account = Account.objects.select_for_update().filter(
+            id=account_id,
+            user=user,
+            is_deleted=False,
+            is_active=True,
+        ).first()
+        if account is None:
+            raise BusinessException("账户不存在或已停用，请指定有效账户")
+        category = Category.objects.filter(
+            Q(user=user, is_system=False)
+            | Q(user__isnull=True, is_system=True),
+            id=category_id,
+            category_type=record.transaction_type,
+            is_deleted=False,
+            is_active=True,
+        ).first()
+        if category is None:
+            raise BusinessException("分类不存在或类型不匹配，请指定有效分类")
+
+        # ======================================
+        # 校验余额，并恢复原账单影响
+        # ======================================
+        if record.transaction_type == Transaction.TransactionType.EXPENSE:
+            if account.account_type != Account.AccountType.CREDIT_CARD and account.balance < record.amount:
+                raise BusinessException("账户余额不足，无法恢复支出账单")
+            account.balance -= record.amount
+        else:
+            account.balance += record.amount
+        if abs(account.balance) > Decimal("999999999999.99"):
+            raise BusinessException("恢复后账户余额超出允许范围")
+        account.save(update_fields=["balance", "updated_at"])
+        record.account = account
+        record.category = category
+        record.status = Transaction.Status.NORMAL
+        record.save(update_fields=["account", "category", "status", "updated_at"])
+        return record
 
     @staticmethod
     def get_transaction_summary(

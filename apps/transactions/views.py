@@ -1,3 +1,5 @@
+from common.utils.idempotency import idempotent_request
+
 from rest_framework.views import APIView
 
 from apps.accounts.services import AccountService
@@ -11,6 +13,7 @@ from .serializers import (
     TransactionImageUploadSerializer,
     TransactionMonthlyStatisticsQuerySerializer,
     TransactionQuerySerializer,
+    TransactionRestoreSerializer,
     TransactionSerializer,
     TransactionSummaryQuerySerializer,
     TransactionTrendQuerySerializer,
@@ -65,6 +68,7 @@ class TransactionListCreateView(APIView):
         transactions = TransactionService.get_transaction_list(
             user=request.user,
             query_params=(query_serializer.validated_data),
+            status=getattr(self, "transaction_status", "normal"),
         )
 
         # ==============================
@@ -115,6 +119,7 @@ class TransactionListCreateView(APIView):
             },
         )
 
+    @idempotent_request
     def post(
         self,
         request,
@@ -178,6 +183,7 @@ class TransactionDetailView(APIView):
             data=serializer.data,
         )
 
+    @idempotent_request
     def put(
         self,
         request,
@@ -204,6 +210,7 @@ class TransactionDetailView(APIView):
             data=result.data,
         )
 
+    @idempotent_request
     def delete(
         self,
         request,
@@ -794,3 +801,103 @@ class TransactionImageDeleteView(APIView):
             data=None,
             message="账单图片删除成功",
         )
+
+
+class TransactionRecycleBinView(TransactionListCreateView):
+    """
+    已删除账单列表。
+
+    复用正常列表的筛选与分页格式，只查询当前用户已删除账单。
+    回收站只提供GET，禁止通过该地址新增账单。
+    """
+
+    http_method_names = ["get", "head", "options"]
+    transaction_status = "deleted"
+
+
+class TransactionRestoreView(APIView):
+    """恢复误删账单，并同步余额、统计和预算进度。"""
+
+    @idempotent_request
+    def post(self, request, transaction_id):
+        # ======================================
+        # 参数校验 / 事务恢复
+        # ======================================
+        serializer = TransactionRestoreSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        record = TransactionService.restore_transaction(
+            user=request.user,
+            transaction_id=transaction_id,
+            validated_data=serializer.validated_data,
+        )
+        return ApiResponse.success(
+            message="账单恢复成功",
+            data=TransactionSerializer(record).data,
+        )
+
+
+class TransactionExportView(APIView):
+    """
+    导出当前用户正常账单为CSV。
+
+    支持与列表一致的类型、账户、分类、标签、日期和关键字筛选。
+    使用UTF-8 BOM兼容Excel，流式输出全部匹配数据，不受分页限制。
+    """
+
+    def get(self, request):
+        import csv
+        from django.http import StreamingHttpResponse
+        from django.utils import timezone
+        from apps.preferences.services import PreferenceService
+
+        # ======================================
+        # 筛选参数校验 / 用户隔离
+        # ======================================
+        serializer = TransactionQuerySerializer(data=request.query_params)
+        serializer.is_valid(raise_exception=True)
+        records = TransactionService.get_transaction_list(
+            user=request.user,
+            query_params=serializer.validated_data,
+        ).prefetch_related("tags")
+        currency = PreferenceService.get_or_create_preference(request.user).currency
+
+        class CsvBuffer:
+            def write(self, value):
+                return value
+
+        def safe_text(value):
+            # 用户输入不能被表格软件解释为公式。
+            value = str(value or "")
+            if value.lstrip().startswith(("=", "+", "-", "@")) or value.startswith(("\t", "\r", "\n")):
+                return "'" + value
+            return value
+
+        def rows():
+            writer = csv.writer(CsvBuffer())
+            yield "\ufeff"
+            yield writer.writerow([
+                "账单ID", "类型", "账户", "分类", "金额", "展示货币",
+                "交易时间", "商户", "备注", "标签",
+            ])
+            for record in records.iterator(chunk_size=500):
+                yield writer.writerow([
+                    record.id,
+                    record.get_transaction_type_display(),
+                    safe_text(record.account.name),
+                    safe_text(record.category.name if record.category else ""),
+                    f"{record.amount:.2f}",
+                    safe_text(currency),
+                    timezone.localtime(record.transaction_time).isoformat(),
+                    safe_text(record.merchant),
+                    safe_text(record.note),
+                    safe_text("、".join(tag.name for tag in record.tags.all() if not tag.is_deleted)),
+                ])
+
+        # CSV属于文件下载接口，不套JSON响应结构。
+        response = StreamingHttpResponse(
+            rows(),
+            content_type="text/csv; charset=utf-8",
+        )
+        response["Content-Disposition"] = 'attachment; filename="transactions.csv"'
+        response["Cache-Control"] = "no-store"
+        return response

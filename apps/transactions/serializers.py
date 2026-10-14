@@ -14,7 +14,7 @@ class TransactionCreateSerializer(serializers.Serializer):
 
     account_id = serializers.IntegerField(
         min_value=1,
-        required=True,
+        required=False,
     )
 
     category_id = serializers.IntegerField(
@@ -315,6 +315,12 @@ class TransactionQuerySerializer(serializers.Serializer):
 
     # 分类 ID。
     category_id = serializers.IntegerField(
+        min_value=1,
+        required=False,
+    )
+
+    # 标签筛选：只接受当前用户未删除标签。
+    tag_id = serializers.IntegerField(
         min_value=1,
         required=False,
     )
@@ -644,3 +650,21 @@ class TransactionImageSerializer(serializers.ModelSerializer):
             return request.build_absolute_uri(image_url)
 
         return image_url
+
+
+class TransactionRestoreSerializer(serializers.Serializer):
+    """
+    恢复账单参数。
+
+    默认沿用原账户、原分类；原关联不可用时可以指定有效替代项。
+    恢复不修改金额、类型、交易时间和备注。
+    """
+
+    account_id = serializers.IntegerField(
+        min_value=1,
+        required=False,
+    )
+    category_id = serializers.IntegerField(
+        min_value=1,
+        required=False,
+    )

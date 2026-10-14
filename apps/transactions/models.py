@@ -273,3 +273,233 @@ class TransactionImage(models.Model):
             f"id={self.id}"
             f")"
         )
+
+
+class ApiIdempotencyRecord(models.Model):
+    """
+    金额操作的重复提交凭证。
+
+    同一用户的同一个请求键只能成功执行一次。
+    凭证和业务变更一起提交，避免扣款成功却未保存响应。
+    """
+
+    # ==========================================
+    # 请求所属用户 / 请求唯一键
+    # ==========================================
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="idempotency_records",
+        verbose_name="用户",
+    )
+    request_key = models.CharField(
+        max_length=128,
+        verbose_name="请求唯一键",
+    )
+    fingerprint = models.CharField(
+        max_length=64,
+        verbose_name="请求内容摘要",
+    )
+
+    # 保存首次成功响应，重试直接返回原结果。
+    response_data = models.JSONField(
+        null=True,
+        verbose_name="响应内容",
+    )
+    status_code = models.PositiveSmallIntegerField(
+        default=200,
+        verbose_name="HTTP状态码",
+    )
+    created_at = models.DateTimeField(
+        auto_now_add=True,
+        verbose_name="创建时间",
+    )
+
+    class Meta:
+        db_table = "api_idempotency_record"
+        verbose_name = "重复提交凭证"
+        verbose_name_plural = "重复提交凭证"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["user", "request_key"],
+                name="unique_user_request_key",
+            ),
+        ]
+
+
+class RecurringTransaction(models.Model):
+    """
+    周期账单模板。
+
+    模板本身不改变余额；到期执行时复用新增账单业务。
+    月末和闰日按起始日期计算，不因短月发生永久日期偏移。
+    """
+
+    class Frequency(models.TextChoices):
+        DAILY = "daily", "每天"
+        WEEKLY = "weekly", "每周"
+        MONTHLY = "monthly", "每月"
+        YEARLY = "yearly", "每年"
+
+    # ==========================================
+    # 用户 / 记账账户 / 分类 / 标签
+    # ==========================================
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="recurring_transactions",
+        verbose_name="用户",
+    )
+    account = models.ForeignKey(
+        Account,
+        on_delete=models.PROTECT,
+        related_name="recurring_transactions",
+        verbose_name="账户",
+    )
+    category = models.ForeignKey(
+        Category,
+        on_delete=models.PROTECT,
+        related_name="recurring_transactions",
+        verbose_name="分类",
+    )
+    tags = models.ManyToManyField(
+        "tags.Tag",
+        blank=True,
+        related_name="recurring_transactions",
+        verbose_name="标签",
+    )
+    name = models.CharField(
+        max_length=100,
+        verbose_name="模板名称",
+    )
+    transaction_type = models.CharField(
+        max_length=20,
+        choices=Transaction.TransactionType.choices,
+        verbose_name="账单类型",
+    )
+    amount = models.DecimalField(
+        max_digits=14,
+        decimal_places=2,
+        verbose_name="金额",
+    )
+    merchant = models.CharField(
+        max_length=100,
+        blank=True,
+        default="",
+        verbose_name="商户",
+    )
+    note = models.CharField(
+        max_length=255,
+        blank=True,
+        default="",
+        verbose_name="备注",
+    )
+
+    # ==========================================
+    # 执行计划
+    # ==========================================
+    frequency = models.CharField(
+        max_length=20,
+        choices=Frequency.choices,
+        verbose_name="周期类型",
+    )
+    interval = models.PositiveSmallIntegerField(
+        default=1,
+        verbose_name="周期间隔",
+    )
+    start_date = models.DateField(
+        verbose_name="起始日期",
+    )
+    end_date = models.DateField(
+        null=True,
+        blank=True,
+        verbose_name="结束日期",
+    )
+    next_date = models.DateField(
+        verbose_name="下次执行日期",
+    )
+    is_active = models.BooleanField(
+        default=True,
+        verbose_name="是否启用",
+    )
+    is_deleted = models.BooleanField(
+        default=False,
+        verbose_name="是否删除",
+    )
+    last_error = models.CharField(
+        max_length=255,
+        blank=True,
+        default="",
+        verbose_name="最近执行错误",
+    )
+    created_at = models.DateTimeField(
+        auto_now_add=True,
+        verbose_name="创建时间",
+    )
+    updated_at = models.DateTimeField(
+        auto_now=True,
+        verbose_name="更新时间",
+    )
+
+    class Meta:
+        db_table = "recurring_transaction"
+        verbose_name = "周期账单模板"
+        verbose_name_plural = "周期账单模板"
+        ordering = ["next_date", "id"]
+        indexes = [
+            models.Index(
+                fields=["is_active", "is_deleted", "next_date"],
+                name="recurring_due_idx",
+            ),
+        ]
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(amount__gt=0),
+                name="recurring_amount_positive",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(interval__gte=1, interval__lte=365),
+                name="recurring_interval_range",
+            ),
+        ]
+
+
+class RecurringExecution(models.Model):
+    """
+    周期账单执行记录。
+
+    同一模板、同一周期只能生成一条账单。
+    账单逻辑删除后仍保留执行记录，防止定时任务重新生成。
+    """
+
+    template = models.ForeignKey(
+        RecurringTransaction,
+        on_delete=models.CASCADE,
+        related_name="executions",
+        verbose_name="模板",
+    )
+    scheduled_date = models.DateField(
+        verbose_name="计划日期",
+    )
+    transaction = models.OneToOneField(
+        Transaction,
+        on_delete=models.PROTECT,
+        related_name="recurring_execution",
+        verbose_name="生成账单",
+    )
+    created_at = models.DateTimeField(
+        auto_now_add=True,
+        verbose_name="执行时间",
+    )
+
+    class Meta:
+        db_table = "recurring_execution"
+        verbose_name = "周期账单执行记录"
+        verbose_name_plural = "周期账单执行记录"
+        ordering = ["-scheduled_date", "-id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["template", "scheduled_date"],
+                name="unique_recurring_period",
+            ),
+        ]

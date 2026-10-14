@@ -1,3 +1,5 @@
+from common.utils.idempotency import idempotent_request
+
 # 导入 DRF APIView。
 from rest_framework.views import APIView
 
@@ -65,6 +67,7 @@ class AccountListCreateView(APIView):
             data=serializer.data,
         )
 
+    @idempotent_request
     def post(self, request):
         """
         创建新的资金账户。
@@ -220,6 +223,7 @@ class AccountBalanceAdjustmentView(APIView):
     该接口必须登录后才能访问。
     """
 
+    @idempotent_request
     def post(
         self,
         request,
@@ -341,6 +345,7 @@ class AccountTransferListCreateView(APIView):
             data=serializer.data,
         )
 
+    @idempotent_request
     def post(
         self,
         request,
@@ -409,6 +414,7 @@ class AccountTransferDetailView(APIView):
             data=serializer.data,
         )
 
+    @idempotent_request
     def delete(
         self,
         request,

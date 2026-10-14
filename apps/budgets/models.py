@@ -110,12 +110,13 @@ class Budget(models.Model):
 
     # 达到预算多少百分比以后进行提醒。
     #
-    # 默认：
-    # 80.00%
+    # 未单独设置时跟随用户偏好；已有显式阈值保持不变。
     alert_threshold = models.DecimalField(
         max_digits=5,
         decimal_places=2,
-        default=80,
+        default=None,
+        null=True,
+        blank=True,
         verbose_name="提醒阈值",
     )
 

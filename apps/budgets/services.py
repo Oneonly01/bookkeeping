@@ -8,6 +8,7 @@ from apps.transactions.models import Transaction
 from common.exceptions import BusinessException
 
 from .models import Budget
+from apps.preferences.services import PreferenceService
 
 
 class BudgetService:
@@ -525,6 +526,7 @@ class BudgetService:
         # 构造预算执行进度
         # ======================================
 
+        preference = PreferenceService.get_or_create_preference(user)
         progress_list = []
 
         for budget in budgets:
@@ -575,7 +577,14 @@ class BudgetService:
             # 是否达到提醒阈值
             # ==================================
 
-            is_alert = usage_percentage >= budget.alert_threshold
+            # 单条预算阈值优先；null表示跟随全局偏好。
+            threshold = budget.alert_threshold
+            if threshold is None:
+                threshold = Decimal(preference.budget_reminder_threshold)
+            is_alert = (
+                preference.budget_reminder_enabled
+                and usage_percentage >= threshold
+            )
 
             # ==================================
             # 是否已经超出预算
@@ -602,7 +611,7 @@ class BudgetService:
                     "spent_amount": (spent_amount),
                     "remaining_amount": (remaining_amount),
                     "usage_percentage": (usage_percentage),
-                    "alert_threshold": (budget.alert_threshold),
+                    "alert_threshold": threshold,
                     "is_alert": is_alert,
                     "is_over_budget": (is_over_budget),
                 }

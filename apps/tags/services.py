@@ -71,6 +71,54 @@ class TagService:
         )
 
     @staticmethod
+    def get_tag_detail(user, tag_id: int):
+        """查询当前用户的有效标签。"""
+        tag = Tag.objects.filter(
+            id=tag_id,
+            user=user,
+            is_deleted=False,
+        ).first()
+
+        if tag is None:
+            raise BusinessException("标签不存在")
+
+        return tag
+
+    @staticmethod
+    @transaction.atomic
+    def update_tag(user, tag_id: int, validated_data: dict):
+        """修改名称、颜色，并保留已有账单关联。"""
+        tag = Tag.objects.select_for_update().filter(
+            id=tag_id,
+            user=user,
+            is_deleted=False,
+        ).first()
+
+        if tag is None:
+            raise BusinessException("标签不存在")
+
+        if "name" in validated_data:
+            name = validated_data["name"]
+            exists = Tag.objects.filter(
+                user=user,
+                name=name,
+                is_deleted=False,
+            ).exclude(id=tag.id).exists()
+            if exists:
+                raise BusinessException("该标签已存在")
+
+        update_fields = []
+        for field in ("name", "color"):
+            if field in validated_data:
+                setattr(tag, field, validated_data[field])
+                update_fields.append(field)
+
+        if update_fields:
+            tag.save(update_fields=[*update_fields, "updated_at"])
+
+        return tag
+
+    @staticmethod
     @transaction.atomic
     def delete_tag(
         user,
