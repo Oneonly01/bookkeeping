@@ -430,9 +430,10 @@ class UpdateUserProfileSerializer(serializers.Serializer):
     nickname = serializers.CharField(
         max_length=50,
         required=False,
-        allow_blank=True,
+        allow_blank=False,
         trim_whitespace=True,
         error_messages={
+            "blank": "昵称不能为空",
             "max_length": "昵称长度不能超过50个字符",
         },
     )
