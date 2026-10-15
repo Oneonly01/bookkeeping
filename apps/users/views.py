@@ -504,26 +504,17 @@ class PasswordResetSendCodeView(APIView):
             account=(serializer.validated_data["account"])
         )
 
-        data = {"account": (serializer.validated_data["account"])}
-
         # ======================================
-        # 开发环境临时返回验证码
+        # 返回找回密码验证码
         # ======================================
-        #
-        # 注意：
-        # 正式生产环境绝对不能返回验证码。
-        #
-        # 现在项目还没有接短信/邮件服务，
-        # 为了方便 Apifox 调试，
-        # 暂时返回 debug_code。
-        #
-        # 等后面部署时必须删除。
-        # ======================================
-
-        from django.conf import settings
-
-        if settings.DEBUG:
-            data["debug_code"] = code
+        # 当前通过 JSON 返回验证码，供 Apifox 调试使用。
+        # 无论 DEBUG 是否开启，都返回 debug_code，保持字段名称一致。
+        # 验证码有效期为 5 分钟，校验成功后立即失效。
+        # 注意：该接口允许匿名访问，能获取响应的人即可继续重置密码。
+        data = {
+            "account": serializer.validated_data["account"],
+            "debug_code": code,
+        }
 
         return ApiResponse.success(
             message="验证码发送成功",
