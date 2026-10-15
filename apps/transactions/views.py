@@ -50,7 +50,8 @@ class TransactionListCreateView(APIView):
         3. 分类筛选；
         4. 日期范围筛选；
         5. 关键字搜索；
-        6. 分页查询。
+        6. 分页查询；
+        7. 金额范围筛选。
         """
 
         # ==============================
@@ -808,6 +809,7 @@ class TransactionRecycleBinView(TransactionListCreateView):
     已删除账单列表。
 
     复用正常列表的筛选与分页格式，只查询当前用户已删除账单。
+    默认按删除时间倒序，最近删除的账单排在最前面。
     回收站只提供GET，禁止通过该地址新增账单。
     """
 
@@ -840,7 +842,7 @@ class TransactionExportView(APIView):
     """
     导出当前用户正常账单为CSV。
 
-    支持与列表一致的类型、账户、分类、标签、日期和关键字筛选。
+    支持与列表一致的类型、账户、分类、标签、日期、金额范围和关键字筛选。
     使用UTF-8 BOM兼容Excel，流式输出全部匹配数据，不受分页限制。
     """
 

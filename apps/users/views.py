@@ -31,9 +31,11 @@ class LoginView(APIView):
 
     请求参数：
         {
-            "username": "admin",
-            "password": "123456"
+            "username": "admin或已注册邮箱",
+            "password": "Test@123456"
         }
+
+    username字段可填写用户名或邮箱，邮箱匹配忽略大小写。
     """
 
     # 登录接口必须允许匿名用户访问。

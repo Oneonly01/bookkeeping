@@ -210,6 +210,8 @@ class TransactionSerializer(serializers.ModelSerializer):
             # 状态。
             "status",
             "status_display",
+            # 最近一次删除时间；正常账单为null。
+            "deleted_at",
             # 时间字段。
             "created_at",
             "updated_at",
@@ -325,6 +327,36 @@ class TransactionQuerySerializer(serializers.Serializer):
         required=False,
     )
 
+    # ==========================================
+    # 金额范围
+    # ==========================================
+    #
+    # 上下限均包含边界，传相同值可以查询指定金额。
+    # 允许下限为0；账单本身仍然要求金额大于0。
+    # 使用Decimal避免浮点误差，精度与账单金额字段一致。
+    # ==========================================
+    min_amount = serializers.DecimalField(
+        max_digits=14,
+        decimal_places=2,
+        min_value=Decimal("0.00"),
+        required=False,
+        error_messages={
+            "invalid": "最低金额格式不正确",
+            "min_value": "最低金额不能小于0",
+        },
+    )
+
+    max_amount = serializers.DecimalField(
+        max_digits=14,
+        decimal_places=2,
+        min_value=Decimal("0.00"),
+        required=False,
+        error_messages={
+            "invalid": "最高金额格式不正确",
+            "min_value": "最高金额不能小于0",
+        },
+    )
+
     # 开始日期。
     start_date = serializers.DateField(
         required=False,
@@ -345,7 +377,7 @@ class TransactionQuerySerializer(serializers.Serializer):
 
     def validate(self, attrs):
         """
-        校验日期范围。
+        校验交易日期范围和金额范围。
         """
 
         start_date = attrs.get("start_date")
@@ -356,6 +388,12 @@ class TransactionQuerySerializer(serializers.Serializer):
         # 开始日期不能晚于结束日期。
         if start_date and end_date and start_date > end_date:
             raise serializers.ValidationError("开始日期不能晚于结束日期")
+
+        # 只传一个金额边界时也能筛选，两个边界都传时检查顺序。
+        min_amount = attrs.get("min_amount")
+        max_amount = attrs.get("max_amount")
+        if min_amount is not None and max_amount is not None and min_amount > max_amount:
+            raise serializers.ValidationError("最低金额不能大于最高金额")
 
         return attrs
 

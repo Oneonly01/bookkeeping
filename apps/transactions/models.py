@@ -135,6 +135,14 @@ class Transaction(models.Model):
     # 时间
     # ==============================
 
+    # 删除时间独立记录，供回收站排序；正常账单和恢复后的账单为空。
+    deleted_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        verbose_name="删除时间",
+        db_comment="最近一次逻辑删除账单的时间，恢复后清空",
+    )
+
     created_at = models.DateTimeField(
         auto_now_add=True,
         verbose_name="创建时间",

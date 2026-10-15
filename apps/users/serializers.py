@@ -26,23 +26,27 @@ class LoginSerializer(serializers.Serializer):
     用户登录序列化器。
 
     职责：
-    1. 校验用户名和密码参数；
-    2. 调用 Django 官方认证体系进行身份验证；
-    3. 返回验证成功的 User 对象。
-
-    注意：
-    当前版本使用 username + password 登录。
-    后续可以扩展手机号、邮箱登录。
+    1. 校验账号和密码参数；
+    2. 支持用户名或邮箱登录，继续通过username字段接收账号；
+    3. 调用Django官方认证体系验证密码和用户状态；
+    4. 返回验证成功的User对象。
     """
 
+    # ==========================================
+    # 登录账号 / 密码
+    # ==========================================
+    #
+    # 保留username参数，原有客户端不需要更改字段名。
+    # 账号可填写用户名或邮箱；邮箱最大长度为254。
+    # ==========================================
     username = serializers.CharField(
-        max_length=150,
+        max_length=254,
         required=True,
         trim_whitespace=True,
         error_messages={
-            "required": "请输入用户名",
-            "blank": "用户名不能为空",
-            "max_length": "用户名长度不能超过150个字符",
+            "required": "请输入用户名或邮箱",
+            "blank": "用户名或邮箱不能为空",
+            "max_length": "登录账号长度不能超过254个字符",
         },
     )
 
@@ -58,30 +62,53 @@ class LoginSerializer(serializers.Serializer):
 
     def validate(self, attrs):
         """
-        联合校验用户名和密码。
+        解析登录账号，并使用Django认证体系校验密码。
+
+        同名用户名优先，避免邮箱形式的用户名被误识别成其他用户的邮箱。
+        历史数据存在重复邮箱时拒绝邮箱登录，不任意选择一个账号。
         """
-
-        username = attrs["username"]
+        account = attrs["username"]
         password = attrs["password"]
+        login_username = account
 
-        # 使用 Django authenticate 进行认证。
+        # ======================================
+        # 优先匹配用户名，再按邮箱查找账号
+        # ======================================
+        if not User.objects.filter(username=account).exists():
+            email_users = list(
+                User.objects.filter(
+                    email__iexact=account,
+                ).only(
+                    "username",
+                )[:2]
+            )
+
+            if len(email_users) > 1:
+                # 不向匿名调用方暴露邮箱对应的用户数量或账号信息。
+                raise BusinessException("用户名或密码错误")
+
+            if email_users:
+                login_username = email_users[0].username
+
+        # ======================================
+        # 验证密码 / 用户状态
+        # ======================================
         #
-        # 不允许自己读取 password 字段后直接比较，
-        # 因为 Django 保存的是密码哈希值。
+        # 只解析账号，不自行比较密码哈希；未知账号仍交给authenticate，
+        # 由Django执行认证失败处理，禁止直接通过邮箱查询结果放行。
+        # ======================================
         user = authenticate(
-            username=username,
+            username=login_username,
             password=password,
         )
 
         if user is None:
             raise BusinessException("用户名或密码错误")
 
-        # 被禁用用户禁止登录。
         if not user.is_active:
             raise BusinessException("当前账号已被禁用")
 
         attrs["user"] = user
-
         return attrs
 
 
@@ -217,7 +244,7 @@ class RegisterSerializer(serializers.Serializer):
         required=True,
         # 不自动删除首尾空格。
         trim_whitespace=False,
-        # 建议最低 8 位。
+        # 最低8位，并在联合校验中执行项目密码强度规则。
         min_length=8,
         # 自定义错误提示。
         error_messages={
@@ -293,7 +320,7 @@ class RegisterSerializer(serializers.Serializer):
     # 对多个字段做联合校验。
     def validate(self, attrs):
         """
-        校验两次输入的密码是否一致。
+        校验两次密码一致，并应用项目配置的密码强度规则。
         """
 
         # 获取密码。
@@ -306,6 +333,27 @@ class RegisterSerializer(serializers.Serializer):
         if password != confirm_password:
             raise serializers.ValidationError(
                 {"confirm_password": ("两次输入的密码不一致")}
+            )
+
+        # ======================================
+        # Django官方密码强度校验
+        # ======================================
+        #
+        # 使用尚未保存的用户信息进行相似度校验，校验失败不创建任何数据。
+        # 与修改密码接口共用AUTH_PASSWORD_VALIDATORS，避免注册绕过规则。
+        # ======================================
+        candidate_user = User(
+            username=attrs["username"],
+            email=attrs["email"],
+        )
+        try:
+            validate_password(
+                password=password,
+                user=candidate_user,
+            )
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError(
+                {"password": list(exc.messages)},
             )
 
         # 返回校验后的数据。

@@ -248,10 +248,11 @@ class TransactionService:
         2. 账户筛选；
         3. 分类筛选；
         4. 日期范围筛选；
-        5. 商户 / 备注关键字搜索。
+        5. 商户 / 备注关键字搜索；
+        6. 标签和金额范围筛选。
         """
 
-        # 只查询当前用户正常账单。
+        # 按指定状态查询当前用户账单，正常列表和回收站均保持用户隔离。
         queryset = Transaction.objects.filter(
             user=user,
             status=status,
@@ -301,6 +302,22 @@ class TransactionService:
             queryset = queryset.filter(tags__id=tag_id).distinct()
 
         # ==============================
+        # 金额范围（包含上下限）
+        # ==============================
+        #
+        # 显式判断None，使0.00也能参与筛选。
+        # 列表、导出、回收站共用本方法，保持筛选规则一致。
+        # ==============================
+        min_amount = query_params.get("min_amount")
+        max_amount = query_params.get("max_amount")
+
+        if min_amount is not None:
+            queryset = queryset.filter(amount__gte=min_amount)
+
+        if max_amount is not None:
+            queryset = queryset.filter(amount__lte=max_amount)
+
+        # ==============================
         # 开始日期
         # ==============================
 
@@ -347,7 +364,15 @@ class TransactionService:
 
             queryset = queryset.filter(keyword_filter)
 
-        # 最新账单优先。
+        # 回收站按最近删除时间倒序，同一时刻删除时按ID倒序稳定分页。
+        # 交易时间用于账单日期筛选，不参与回收站的默认排序。
+        if status == Transaction.Status.DELETED:
+            return queryset.order_by(
+                "-deleted_at",
+                "-id",
+            )
+
+        # 正常列表仍按实际交易时间倒序。
         return queryset.order_by(
             "-transaction_time",
             "-id",
@@ -802,10 +827,12 @@ class TransactionService:
 
         # 逻辑删除账单。
         transaction_record.status = Transaction.Status.DELETED
+        transaction_record.deleted_at = timezone.now()
 
         transaction_record.save(
             update_fields=[
                 "status",
+                "deleted_at",
                 "updated_at",
             ]
         )
@@ -874,7 +901,17 @@ class TransactionService:
         record.account = account
         record.category = category
         record.status = Transaction.Status.NORMAL
-        record.save(update_fields=["account", "category", "status", "updated_at"])
+        # 恢复后清空本次删除时间；再次删除时记录新的删除时间。
+        record.deleted_at = None
+        record.save(
+            update_fields=[
+                "account",
+                "category",
+                "status",
+                "deleted_at",
+                "updated_at",
+            ]
+        )
         return record
 
     @staticmethod
