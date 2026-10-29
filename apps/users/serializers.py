@@ -1,3 +1,4 @@
+from string import punctuation
 from uuid import uuid4
 
 from django.contrib.auth import authenticate
@@ -173,22 +174,36 @@ class RegisterSerializer(serializers.Serializer):
     用户注册序列化器。
 
     主要职责：
-    1. 校验注册参数；
+    1. 根据注册方式校验邮箱、手机号是否必填；
     2. 校验用户名、邮箱、手机号是否重复；
-    3. 创建 Django User；
-    4. 创建对应 UserProfile；
+    3. 校验两次密码及密码强度；
+    4. 创建Django User和对应UserProfile；
     5. 保证整个注册过程具有事务一致性。
     """
 
-    # 用户名。
-    username = serializers.CharField(
-        # Django 默认用户名最大长度为 150。
-        max_length=150,
-        # 必填。
+    # 注册方式。
+    # phone = 手机号注册；email = 邮箱注册。
+    # 仅用于参数校验，不保存到数据库。
+    register_type = serializers.ChoiceField(
+        choices=(
+            ("phone", "手机号注册"),
+            ("email", "邮箱注册"),
+        ),
         required=True,
-        # 自动去除首尾空格。
+        write_only=True,
+        error_messages={
+            "required": "请选择注册方式",
+            "invalid_choice": "注册方式不正确，请选择phone或email",
+            "null": "注册方式不能为空",
+        },
+    )
+
+    # 用户名。
+    # 两种注册方式都需要填写用户名。
+    username = serializers.CharField(
+        max_length=150,
+        required=True,
         trim_whitespace=True,
-        # 自定义错误提示。
         error_messages={
             "required": "请输入用户名",
             "blank": "用户名不能为空",
@@ -197,216 +212,241 @@ class RegisterSerializer(serializers.Serializer):
     )
 
     # 邮箱。
+    # 字段层面允许不传，是否必填由validate()根据注册方式判断。
     email = serializers.EmailField(
-        # 必填。
-        required=True,
-        # 自定义错误提示。
+        required=False,
+        allow_blank=True,
+        allow_null=True,
         error_messages={
-            "required": "请输入邮箱",
-            "blank": "邮箱不能为空",
             "invalid": "邮箱格式不正确",
         },
     )
 
     # 手机号。
+    # 字段层面允许不传，是否必填由validate()根据注册方式判断。
     phone = serializers.CharField(
-        # 当前按照中国大陆手机号长度设计。
         max_length=11,
-        # 必填。
-        required=True,
-        # 去除首尾空格。
+        required=False,
+        allow_blank=True,
+        allow_null=True,
         trim_whitespace=True,
-        # 自定义错误提示。
         error_messages={
-            "required": "请输入手机号",
-            "blank": "手机号不能为空",
             "max_length": "手机号格式不正确",
         },
     )
 
     # 昵称。
+    # 非必填，未传或为空时生成随机昵称。
     nickname = serializers.CharField(
-        # 最大长度与 UserProfile 模型一致。
         max_length=50,
-        # 非必填。
         required=False,
-        # 允许空字符串。
         allow_blank=True,
-        # 去除首尾空格。
         trim_whitespace=True,
     )
 
     # 密码。
+    # 不删除首尾空格，并在联合校验中执行密码强度规则。
     password = serializers.CharField(
-        # 密码只允许写入，不会返回给客户端。
         write_only=True,
-        # 必填。
         required=True,
-        # 不自动删除首尾空格。
         trim_whitespace=False,
-        # 最低8位，并在联合校验中执行项目密码强度规则。
         min_length=8,
-        # 自定义错误提示。
+        max_length=20,
         error_messages={
             "required": "请输入密码",
             "blank": "密码不能为空",
             "min_length": "密码长度不能少于8位",
+            "max_length": "密码长度不能超过20个字符",
         },
     )
 
     # 确认密码。
+    # 同样限制最大长度，两次密码是否一致由validate()判断。
     confirm_password = serializers.CharField(
-        # 只写字段。
         write_only=True,
-        # 必填。
         required=True,
-        # 不删除首尾空格。
         trim_whitespace=False,
-        # 自定义错误提示。
+        max_length=20,
         error_messages={
             "required": "请再次输入密码",
             "blank": "确认密码不能为空",
+            "max_length": "确认密码长度不能超过20个字符",
         },
     )
 
-    # 校验用户名。
     def validate_username(self, value):
         """
         校验用户名是否已存在。
         """
 
-        # 判断用户名是否重复。
         if User.objects.filter(username=value).exists():
-
-            # 重复则抛出参数校验异常。
             raise serializers.ValidationError("用户名已存在")
 
-        # 返回校验后的用户名。
         return value
 
-    # 校验邮箱。
     def validate_email(self, value):
         """
-        校验邮箱是否已被注册。
+        校验已填写邮箱的唯一性，并统一转换为小写。
         """
 
-        # 使用 iexact 忽略邮箱大小写。
-        if User.objects.filter(email__iexact=value).exists():
+        # 空邮箱不参与唯一性检查。
+        # Django默认User使用空字符串表示未填写邮箱。
+        if not value:
+            return ""
 
-            # 邮箱重复。
+        value = value.lower()
+
+        # 使用iexact忽略邮箱大小写。
+        if User.objects.filter(email__iexact=value).exists():
             raise serializers.ValidationError("该邮箱已被注册")
 
-        # 返回统一的小写邮箱。
-        return value.lower()
+        return value
 
-    # 校验手机号。
     def validate_phone(self, value):
         """
-        校验手机号格式及唯一性。
+        校验已填写手机号的格式及唯一性。
         """
 
-        # 中国大陆手机号要求：
-        # 11 位数字，并且以 1 开头。
+        # 空手机号不参与格式及唯一性检查。
+        # 使用None表示未填写，避免多个空字符串触发唯一约束。
+        if not value:
+            return None
+
+        # 保留当前项目的手机号规则：
+        # 11位数字，并且以1开头。
         if len(value) != 11 or not value.isdigit() or not value.startswith("1"):
             raise serializers.ValidationError("手机号格式不正确")
 
-        # 检查 UserProfile 是否已经存在相同手机号。
         if UserProfile.objects.filter(phone=value).exists():
             raise serializers.ValidationError("该手机号已被注册")
 
-        # 返回手机号。
         return value
 
-    # 对多个字段做联合校验。
     def validate(self, attrs):
         """
-        校验两次密码一致，并应用项目配置的密码强度规则。
+        根据注册方式检查必填字段，并校验密码。
         """
 
-        # 获取密码。
-        password = attrs.get("password")
+        # ======================================
+        # 按注册方式校验必填字段
+        # ======================================
 
-        # 获取确认密码。
+        register_type = attrs["register_type"]
+
+        # 统一处理字段缺省、null和空字符串。
+        email = attrs.get("email") or ""
+        phone = attrs.get("phone") or None
+
+        # 手机号注册必须填写手机号。
+        if register_type == "phone" and not phone:
+            raise serializers.ValidationError({"phone": "手机号注册时请输入手机号"})
+
+        # 邮箱注册必须填写邮箱。
+        if register_type == "email" and not email:
+            raise serializers.ValidationError({"email": "邮箱注册时请输入邮箱"})
+
+        # 将统一处理后的值交给后续创建逻辑。
+        attrs["email"] = email
+        attrs["phone"] = phone
+
+        # ======================================
+        # 校验两次密码是否一致
+        # ======================================
+
+        password = attrs.get("password")
         confirm_password = attrs.get("confirm_password")
 
-        # 两次密码不一致。
         if password != confirm_password:
             raise serializers.ValidationError(
-                {"confirm_password": ("两次输入的密码不一致")}
+                {"confirm_password": "两次输入的密码不一致"}
+            )
+        # ======================================
+        # 新增：密码字符组合校验
+        # ======================================
+
+        # 检查大写字母、小写字母、数字、英文特殊符号。
+        character_types = (
+            any("A" <= char <= "Z" for char in password),
+            any("a" <= char <= "z" for char in password),
+            any("0" <= char <= "9" for char in password),
+            any(char in punctuation for char in password),
+        )
+
+        # 至少包含以上四类字符中的三类。
+        if sum(character_types) < 3:
+            raise serializers.ValidationError(
+                {
+                    "password": (
+                        "密码必须包含大写字母、小写字母、数字、" "特殊符号中的至少三种"
+                    )
+                }
             )
 
         # ======================================
         # Django官方密码强度校验
         # ======================================
-        #
-        # 使用尚未保存的用户信息进行相似度校验，校验失败不创建任何数据。
-        # 与修改密码接口共用AUTH_PASSWORD_VALIDATORS，避免注册绕过规则。
-        # ======================================
+
+        # 使用尚未保存的用户信息进行密码相似度校验。
+        # 与修改密码接口共用AUTH_PASSWORD_VALIDATORS。
         candidate_user = User(
             username=attrs["username"],
-            email=attrs["email"],
+            email=email,
         )
+
         try:
             validate_password(
                 password=password,
                 user=candidate_user,
             )
         except DjangoValidationError as exc:
-            raise serializers.ValidationError(
-                {"password": list(exc.messages)},
-            )
+            raise serializers.ValidationError({"password": list(exc.messages)})
 
-        # 返回校验后的数据。
         return attrs
 
     # 创建用户。
     @transaction.atomic
     def create(self, validated_data):
         """
-        创建 User 和 UserProfile。
+        创建User和UserProfile。
 
-        transaction.atomic 保证：
+        transaction.atomic保证：
         任意一步失败都会整体回滚。
         """
 
-        # 从校验后的数据中移除确认密码。
+        # 注册方式仅用于参数校验，不保存到数据库。
+        validated_data.pop("register_type")
+
+        # 确认密码仅用于一致性校验，不保存到数据库。
         validated_data.pop("confirm_password")
 
-        # 取出密码。
+        # 取出原始密码，交给create_user执行安全哈希。
         password = validated_data.pop("password")
 
-        # 取出手机号。
-        phone = validated_data.pop("phone")
+        # 邮箱注册可以不填写手机号。
+        phone = validated_data.pop("phone", None) or None
+
+        # 手机号注册可以不填写邮箱。
+        email = validated_data.pop("email", "") or ""
 
         # 未传昵称或昵称为空时生成随机昵称。
         nickname = validated_data.pop("nickname", None)
         if not nickname:
             nickname = f"用户{uuid4().hex[:8]}"
 
-        # 使用 create_user 创建 Django 用户。
-        #
-        # create_user 会自动对密码进行安全哈希，
-        # 不能使用 User.objects.create() 直接保存明文密码。
+        # 使用create_user创建用户，禁止直接保存明文密码。
         user = User.objects.create_user(
-            # 用户名。
             username=validated_data["username"],
-            # 邮箱。
-            email=validated_data["email"],
-            # 原始密码。
+            email=email,
             password=password,
         )
 
         # 创建用户扩展资料。
         UserProfile.objects.create(
-            # 关联刚刚创建的 Django User。
             user=user,
-            # 用户手机号。
             phone=phone,
-            # 用户昵称。
             nickname=nickname,
         )
 
-        # 返回创建成功的 User 对象。
         return user
 
 
