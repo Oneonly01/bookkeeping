@@ -7,6 +7,7 @@ from common.exceptions.business import BusinessException
 
 # 导入账户模型。
 from .models import Account, AccountBalanceAdjustment, Transfer
+from apps.dashboard.asset_services import AssetSnapshotService
 from apps.preferences.services import PreferenceService
 
 
@@ -41,6 +42,10 @@ class AccountService:
         :return:
             创建成功的 Account 对象。
         """
+
+        # 先锁定用户并结转上月快照，再修改账户或余额。
+        # 快照与业务操作使用同一事务，业务失败时一起回滚。
+        AssetSnapshotService.prepare_user(user)
 
         # 默认账户切换和偏好更新在同一用户锁内完成。
         PreferenceService.lock_user(user)
@@ -167,6 +172,10 @@ class AccountService:
         4. 不允许通过本接口修改账户余额。
         """
 
+        # 先锁定用户并结转上月快照，再修改账户或余额。
+        # 快照与业务操作使用同一事务，业务失败时一起回滚。
+        AssetSnapshotService.prepare_user(user)
+
         PreferenceService.lock_user(user)
 
         # 先通过统一方法获取当前用户账户。
@@ -242,6 +251,10 @@ class AccountService:
         4. 如果删除的是默认账户，
         自动设置其他账户为新的默认账户。
         """
+
+        # 先锁定用户并结转上月快照，再修改账户或余额。
+        # 快照与业务操作使用同一事务，业务失败时一起回滚。
+        AssetSnapshotService.prepare_user(user)
 
         PreferenceService.lock_user(user)
 
@@ -343,6 +356,10 @@ class AccountService:
         :return:
             校准后的 Account 对象。
         """
+
+        # 先锁定用户并结转上月快照，再修改账户或余额。
+        # 快照与业务操作使用同一事务，业务失败时一起回滚。
+        AssetSnapshotService.prepare_user(user)
 
         try:
             # 使用 select_for_update()
@@ -462,6 +479,10 @@ class AccountService:
         6. 转入账户增加：转账金额；
         7. 所有余额修改和转账记录必须同一事务完成。
         """
+
+        # 先锁定用户并结转上月快照，再修改账户或余额。
+        # 快照与业务操作使用同一事务，业务失败时一起回滚。
+        AssetSnapshotService.prepare_user(user)
 
         source_account_id = validated_data["source_account_id"]
 
@@ -667,6 +688,10 @@ class AccountService:
         6. 转入账户扣回 amount；
         7. 所有操作必须处于同一个数据库事务。
         """
+
+        # 先锁定用户并结转上月快照，再修改账户或余额。
+        # 快照与业务操作使用同一事务，业务失败时一起回滚。
+        AssetSnapshotService.prepare_user(user)
 
         try:
             # 锁定转账记录。
@@ -983,3 +1008,50 @@ class AccountService:
             "asset_account_count": (asset_account_count),
             "liability_account_count": (liability_account_count),
         }
+
+    @staticmethod
+    @transaction.atomic
+    def initialize_user_accounts(user):
+        """
+        初始化新用户的常用账户。
+
+        业务规则：
+        1. 初始化支付宝、现金、微信三个真实账户；
+        2. 初始余额和当前余额均为零；
+        3. 银行卡由用户添加具体卡片，不创建汇总账户；
+        4. 同类型未删除账户已存在时跳过，不覆盖原有余额。
+        """
+
+        # 锁定用户，避免重复执行时并发创建相同的初始账户。
+        # 与现有创建账户方法使用相同的用户锁。
+        PreferenceService.lock_user(user)
+
+        initial_accounts = (
+            ("支付宝", Account.AccountType.ALIPAY, 10),
+            ("现金", Account.AccountType.CASH, 20),
+            ("微信", Account.AccountType.WECHAT, 30),
+        )
+
+        for name, account_type, sort_order in initial_accounts:
+            # 已存在该类型账户时保留原数据。
+            # 不修改已有账户的名称、余额、启用状态或默认状态。
+            exists = Account.objects.filter(
+                user=user,
+                account_type=account_type,
+                is_deleted=False,
+            ).exists()
+
+            if exists:
+                continue
+
+            # 复用账户创建服务，保持账户与偏好设置的处理方式一致。
+            AccountService.create_account(
+                user=user,
+                validated_data={
+                    "name": name,
+                    "account_type": account_type,
+                    "initial_balance": Decimal("0.00"),
+                    "sort_order": sort_order,
+                    "is_default": False,
+                },
+            )

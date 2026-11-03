@@ -4,6 +4,7 @@ from uuid import uuid4
 from django.contrib.auth import authenticate
 from rest_framework import serializers
 
+from apps.accounts.services import AccountService
 from apps.users.models import UserProfile
 from common.exceptions import BusinessException
 from rest_framework_simplejwt.exceptions import TokenError
@@ -446,7 +447,9 @@ class RegisterSerializer(serializers.Serializer):
             phone=phone,
             nickname=nickname,
         )
-
+        # 初始化新用户的支付宝、现金、微信账户。
+        # 当前方法已处于注册事务中，初始化失败时整个注册过程回滚。
+        AccountService.initialize_user_accounts(user)
         return user
 
 

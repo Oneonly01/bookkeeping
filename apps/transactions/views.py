@@ -549,9 +549,9 @@ class TransactionMonthlyStatisticsView(APIView):
         # 获取环比数据
         # ======================================
 
-        income_rate = statistics["comparison"]["income_rate"]
-
-        expense_rate = statistics["comparison"]["expense_rate"]
+        comparison = statistics["comparison"]
+        income_rate = comparison["income_rate"]
+        expense_rate = comparison["expense_rate"]
 
         # ======================================
         # 构造接口返回数据
@@ -586,7 +586,15 @@ class TransactionMonthlyStatisticsView(APIView):
                 "expense_rate": (
                     f"{expense_rate:.2f}" if expense_rate is not None else None
                 ),
+                # 变化金额保留正负号，前端按方向展示增加或减少。
+                "income_change_amount": f"{comparison['income_change_amount']:.2f}",
+                "expense_change_amount": f"{comparison['expense_change_amount']:.2f}",
+                # up增加、down减少、unchanged持平、new新增。
+                "income_trend": comparison["income_trend"],
+                "expense_trend": comparison["expense_trend"],
             },
+            # 账户净余额对比，不能使用current.balance月结余替代。
+            "asset_comparison": statistics["asset_comparison"],
         }
 
         # ======================================

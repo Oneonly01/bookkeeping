@@ -1,6 +1,7 @@
 from datetime import datetime
 from decimal import Decimal
 
+from django.db import transaction
 from django.db.models import Sum
 from django.utils import timezone
 
@@ -8,17 +9,19 @@ from apps.accounts.models import Account
 from apps.budgets.models import Budget
 from apps.savings.models import SavingsGoal
 from apps.transactions.models import Transaction
+from .asset_services import AssetSnapshotService
 
 
 class DashboardService:
     """
     首页数据聚合业务服务。
 
-    Dashboard 本身不保存数据，
-    只从其它业务模块聚合当前用户的数据。
+    首页业务数据从其它模块聚合，
+    月末资产快照单独保存，用于账户净余额环比。
     """
 
     @staticmethod
+    @transaction.atomic
     def get_summary(
         user,
     ):
@@ -39,6 +42,10 @@ class DashboardService:
         # ======================================
 
         today = timezone.localdate()
+
+        # 先锁定用户并结转已跟踪的上月余额，再读取首页资产。
+        # 与账户变更统一锁顺序，保证本次首页金额与环比口径一致。
+        AssetSnapshotService.prepare_user(user, today=today)
 
         year = today.year
         month = today.month
@@ -84,8 +91,51 @@ class DashboardService:
         total_assets = Decimal("0.00")
 
         total_liabilities = Decimal("0.00")
+        # ======================================
+        # 初始化首页账户分组
+        # ======================================
 
+        # 前四个分组固定返回，即使没有具体账户也显示零。
+        # 其他账户有实际记录时再展示，避免遗漏用户资产。
+        group_definitions = (
+            ("alipay", "支付宝"),
+            ("bank", "银行卡"),
+            ("cash", "现金"),
+            ("wechat", "微信"),
+            ("other", "其他"),
+        )
+
+        account_group_data = {
+            key: {
+                "group_key": key,
+                "group_name": name,
+                "balance": Decimal("0.00"),
+                "account_count": 0,
+            }
+            for key, name in group_definitions
+        }
+
+        # 根据账户类型归组，不根据账户名称或银行名称判断。
+        account_group_map = {
+            Account.AccountType.ALIPAY: "alipay",
+            Account.AccountType.BANK: "bank",
+            Account.AccountType.CREDIT_CARD: "bank",
+            Account.AccountType.CASH: "cash",
+            Account.AccountType.WECHAT: "wechat",
+            Account.AccountType.OTHER: "other",
+        }
         for account in accounts:
+            # 根据账户类型获取所属首页分组。
+            group_key = account_group_map.get(
+                account.account_type,
+                "other",
+            )
+
+            # 累加当前余额，保留信用卡负余额的符号。
+            account_group_data[group_key]["balance"] += account.balance
+
+            # 统计分组包含的真实账户数量。
+            account_group_data[group_key]["account_count"] += 1
             # 正数作为资产。
             if account.balance >= 0:
                 total_assets += account.balance
@@ -93,9 +143,30 @@ class DashboardService:
             # 负数绝对值作为负债。
             else:
                 total_liabilities += abs(account.balance)
+        # ======================================
+        # 整理首页账户分组返回数据
+        # ======================================
 
+        account_groups = []
+
+        for group in account_group_data.values():
+            # 没有其他账户时，只展示四个固定分组。
+            if group["group_key"] == "other" and group["account_count"] == 0:
+                continue
+
+            account_groups.append(
+                {
+                    "group_key": group["group_key"],
+                    "group_name": group["group_name"],
+                    "balance": f"{group['balance']:.2f}",
+                    "account_count": group["account_count"],
+                }
+            )
         # 净资产。
         net_assets = total_assets - total_liabilities
+
+        # 当前净余额相对上月末快照的变化，缺少快照时不假设为零。
+        asset_comparison = AssetSnapshotService.get_comparison(user, today=today)
 
         # ======================================
         # 2. 本月收入 / 支出
@@ -352,4 +423,7 @@ class DashboardService:
             # 最近账单
             # ==================================
             "recent_transactions": (recent_transaction_list),
+            "account_groups": account_groups,
+            # 账户净余额环比，与本月收支结余独立。
+            "asset_comparison": asset_comparison,
         }

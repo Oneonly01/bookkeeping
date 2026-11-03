@@ -8,6 +8,8 @@ from apps.tags.models import Tag
 from common.exceptions import BusinessException
 
 from apps.accounts.models import Account
+from apps.dashboard.asset_services import AssetSnapshotService
+from common.utils.comparison import calculate_amount_comparison
 from apps.categories.models import Category
 
 from .models import Transaction, TransactionImage
@@ -37,6 +39,10 @@ class TransactionService:
         6. 收入增加账户余额；
         7. 余额更新、账单创建、标签绑定必须在同一事务。
         """
+
+        # 先锁定用户并结转上月快照，再修改账户或余额。
+        # 快照与业务操作使用同一事务，业务失败时一起回滚。
+        AssetSnapshotService.prepare_user(user)
 
         # ==========================================
         # 拷贝请求参数
@@ -436,6 +442,10 @@ class TransactionService:
             替换为标签 1、2。
         """
 
+        # 先锁定用户并结转上月快照，再修改账户或余额。
+        # 快照与业务操作使用同一事务，业务失败时一起回滚。
+        AssetSnapshotService.prepare_user(user)
+
         # ==========================================
         # 拷贝请求参数
         # ==========================================
@@ -787,6 +797,10 @@ class TransactionService:
         实际为逻辑删除，并回滚余额影响。
         """
 
+        # 先锁定用户并结转上月快照，再修改账户或余额。
+        # 快照与业务操作使用同一事务，业务失败时一起回滚。
+        AssetSnapshotService.prepare_user(user)
+
         try:
             # 锁定账单。
             transaction_record = Transaction.objects.select_for_update().get(
@@ -854,6 +868,10 @@ class TransactionService:
         4. 锁定账单和账户，保证状态与余额同一事务更新；
         5. 保留原ID、图片和标签关系，不创建第二条账单。
         """
+
+        # 先锁定用户并结转上月快照，再修改账户或余额。
+        # 快照与业务操作使用同一事务，业务失败时一起回滚。
+        AssetSnapshotService.prepare_user(user)
         # ======================================
         # 锁定已删除账单 / 验证当前用户
         # ======================================
@@ -1339,6 +1357,7 @@ class TransactionService:
         }
 
     @staticmethod
+    @transaction.atomic
     def get_monthly_statistics(
         user,
         query_params: dict,
@@ -1360,6 +1379,9 @@ class TransactionService:
         如果没有传 month，
         默认使用当前月份。
         """
+
+        # 先串行化当前用户的余额变化，再读取收支和资产比较。
+        AssetSnapshotService.prepare_user(user)
 
         # ==========================================
         # 获取目标月份
@@ -1500,36 +1522,26 @@ class TransactionService:
         previous_balance = previous_income - previous_expense
 
         # ==========================================
-        # 计算收入环比
+        # 计算收支环比及变化方向
         # ==========================================
 
-        # 默认收入环比为 None。
-        #
-        # None 表示：
-        # 上个月收入为 0，
-        # 无法正常计算百分比。
-        income_rate = None
+        # 共用金额对比规则，避免首页与月度接口分别维护计算公式。
+        # 上月为零时百分比为None，但仍返回new、down或unchanged。
+        income_comparison = calculate_amount_comparison(current_income, previous_income)
+        expense_comparison = calculate_amount_comparison(current_expense, previous_expense)
 
-        if previous_income > 0:
-            income_rate = (
-                (current_income - previous_income) / previous_income * Decimal("100")
-            )
+        comparison = {
+            "income_rate": income_comparison["change_rate"],
+            "expense_rate": expense_comparison["change_rate"],
+            "income_change_amount": income_comparison["change_amount"],
+            "expense_change_amount": expense_comparison["change_amount"],
+            "income_trend": income_comparison["trend"],
+            "expense_trend": expense_comparison["trend"],
+        }
 
-            # 保留两位小数。
-            income_rate = income_rate.quantize(Decimal("0.01"))
-
-        # ==========================================
-        # 计算支出环比
-        # ==========================================
-
-        expense_rate = None
-
-        if previous_expense > 0:
-            expense_rate = (
-                (current_expense - previous_expense) / previous_expense * Decimal("100")
-            )
-
-            expense_rate = expense_rate.quantize(Decimal("0.01"))
+        # 账户余额使用独立快照，与收入减支出的月结余分别返回。
+        # 历史月份缺少快照时返回无数据，不根据账单反推或假设为零。
+        asset_comparison = AssetSnapshotService.get_comparison(user, month=month)
 
         # ==========================================
         # 返回统计结果
@@ -1553,10 +1565,9 @@ class TransactionService:
                 "balance": previous_balance,
             },
             # 环比数据。
-            "comparison": {
-                "income_rate": income_rate,
-                "expense_rate": expense_rate,
-            },
+            "comparison": comparison,
+            # 所选月份账户净余额相对上月末的变化。
+            "asset_comparison": asset_comparison,
         }
 
     @staticmethod
