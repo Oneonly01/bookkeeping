@@ -8,6 +8,7 @@ from django.utils import timezone
 from apps.accounts.models import Account
 from apps.budgets.models import Budget
 from apps.savings.models import SavingsGoal
+from apps.savings.overdue import overdue_goal_filter
 from apps.transactions.models import Transaction
 from .asset_services import AssetSnapshotService
 
@@ -318,6 +319,9 @@ class DashboardService:
         savings_active_count = savings_goals.filter(
             status=(SavingsGoal.Status.ACTIVE)
         ).count()
+
+        # 与储蓄汇总接口使用同一逾期口径，仍属于进行中数量的子集。
+        savings_overdue_count = savings_goals.filter(overdue_goal_filter(today)).count()
         # ======================================
         # 暂停状态储蓄目标数量
         # ======================================
@@ -412,6 +416,7 @@ class DashboardService:
             "savings": {
                 "total_count": (savings_total_count),
                 "active_count": (savings_active_count),
+                "overdue_count": savings_overdue_count,
                 "paused_count": (savings_paused_count),
                 "completed_count": (savings_completed_count),
                 "target_amount": (f"{savings_target_amount:.2f}"),

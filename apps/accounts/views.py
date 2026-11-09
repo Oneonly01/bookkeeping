@@ -14,6 +14,7 @@ from .serializers import (
     AccountBalanceAdjustSerializer,
     AccountBalanceAdjustmentSerializer,
     AccountCreateSerializer,
+    AccountListQuerySerializer,
     AccountSerializer,
     AccountUpdateSerializer,
     TransferCreateSerializer,
@@ -41,18 +42,27 @@ class AccountListCreateView(APIView):
     def get(self, request):
         """
         获取当前登录用户账户列表。
+
+        可选Query参数：
+        keyword账户名称、account_type账户类型、
+        is_active启用状态、is_default默认账户状态。
         """
 
-        # 只查询当前登录用户自己的账户。
-        #
-        # 不接受前端传 user_id，
-        # 防止越权查询其他用户数据。
-        accounts = Account.objects.filter(
+        # ======================================
+        # 校验筛选参数
+        # ======================================
+
+        # 转换为普通字典，避免DRF将缺省Query布尔参数
+        # 按HTML复选框规则补成false，导致无条件查询被意外筛选。
+        query_serializer = AccountListQuerySerializer(
+            data=request.query_params.dict(),
+        )
+        query_serializer.is_valid(raise_exception=True)
+
+        # 用户身份仅来自Token；不使用前端传入的user_id。
+        accounts = AccountService.get_account_list(
             user=request.user,
-            is_deleted=False,
-        ).order_by(
-            "sort_order",
-            "id",
+            query_params=query_serializer.validated_data,
         )
 
         # 将 QuerySet 转换为接口返回数据。

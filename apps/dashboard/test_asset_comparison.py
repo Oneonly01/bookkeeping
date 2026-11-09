@@ -208,6 +208,40 @@ class AssetSnapshotTests(APITestCase):
         self.assertEqual(len(dashboard.data["data"]["account_groups"]), 4)
 
 
+    def test_selected_history_month_still_exposes_current_balance_without_snapshot(self):
+        with self.on_day(date(2026, 11, 3)):
+            self.create_account("1500")
+            response = self.client.get("/api/v1/transactions/monthly-statistics/?month=2026-10")
+        self.assertEqual(response.status_code, 200, response.data)
+        data = response.data["data"]
+        self.assertEqual(data["current_month"], "2026-10")
+        asset = data["asset_comparison"]
+        self.assertEqual(asset["current_month"], "2026-11")
+        self.assertEqual(asset["previous_month"], "2026-10")
+        self.assertEqual(asset["current_net_assets"], "1500.00")
+        self.assertTrue(asset["has_current_data"])
+        self.assertFalse(asset["has_previous_snapshot"])
+        self.assertIsNone(asset["change_rate"])
+
+    def test_changing_income_month_does_not_change_balance_or_its_baseline(self):
+        with self.on_day(date(2026, 10, 31)):
+            account = self.create_account("1000")
+        with self.on_day(date(2026, 11, 3)):
+            AccountService.adjust_balance(self.user, account.pk, Decimal("1500"))
+            expected = AssetSnapshotService.get_comparison(self.user)
+            for selected_month in ("2026-09", "2026-10", "2026-11", "2026-12"):
+                with self.subTest(month=selected_month):
+                    response = self.client.get(
+                        "/api/v1/transactions/monthly-statistics/", {"month": selected_month}
+                    )
+                    self.assertEqual(response.status_code, 200, response.data)
+                    self.assertEqual(response.data["data"]["current_month"], selected_month)
+                    self.assertEqual(response.data["data"]["asset_comparison"], expected)
+        self.assertEqual(expected["current_net_assets"], "1500.00")
+        self.assertEqual(expected["previous_net_assets"], "1000.00")
+        self.assertEqual(expected["change_rate"], "50.00")
+
+
 class MonthlyComparisonApiTests(APITestCase):
     """验证已有返回字段兼容、新字段格式及自然月跨年。"""
 

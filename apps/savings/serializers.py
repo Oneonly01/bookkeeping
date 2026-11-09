@@ -4,6 +4,96 @@ from django.utils import timezone
 from rest_framework import serializers
 
 from .models import SavingsGoal, SavingsRecord
+from .overdue import goal_overdue_days
+
+
+class SavingsGoalListQuerySerializer(serializers.Serializer):
+    """
+    存钱罐列表查询参数。
+
+    所有条件选填，多个条件取交集；不传时保持原有列表返回方式。
+    金额范围包含边界，日期范围按照目标截止日期筛选。
+    """
+
+    # overdue为日期推导的展示状态，不写入数据库status字段。
+    # active筛选未逾期进行中，paused与completed按原有状态筛选。
+    status = serializers.ChoiceField(
+        choices=(
+            ("active", "进行中"),
+            ("paused", "已暂停"),
+            ("completed", "已完成"),
+            ("overdue", "已逾期"),
+        ),
+        required=False,
+        error_messages={"invalid_choice": "储蓄目标筛选状态不正确"},
+    )
+
+    # 目标名称、备注模糊搜索，空关键字等同于不筛选。
+    keyword = serializers.CharField(
+        max_length=100,
+        required=False,
+        allow_blank=True,
+        trim_whitespace=True,
+        error_messages={"max_length": "搜索关键字不能超过100个字符"},
+    )
+
+    # 目标金额上下限，包含等于边界的目标；0也是有效筛选条件。
+    min_target_amount = serializers.DecimalField(
+        max_digits=14,
+        decimal_places=2,
+        min_value=Decimal("0.00"),
+        required=False,
+    )
+    max_target_amount = serializers.DecimalField(
+        max_digits=14,
+        decimal_places=2,
+        min_value=Decimal("0.00"),
+        required=False,
+    )
+
+    # 当前已存金额上下限，不以剩余金额或目标金额代替。
+    min_current_amount = serializers.DecimalField(
+        max_digits=14,
+        decimal_places=2,
+        min_value=Decimal("0.00"),
+        required=False,
+    )
+    max_current_amount = serializers.DecimalField(
+        max_digits=14,
+        decimal_places=2,
+        min_value=Decimal("0.00"),
+        required=False,
+    )
+
+    # 截止日期范围，支持仅传一端；设置范围时不包含无截止日期目标。
+    deadline_start = serializers.DateField(
+        required=False,
+        error_messages={"invalid": "开始截止日期格式不正确，请使用YYYY-MM-DD"},
+    )
+    deadline_end = serializers.DateField(
+        required=False,
+        error_messages={"invalid": "结束截止日期格式不正确，请使用YYYY-MM-DD"},
+    )
+
+    def validate(
+        self,
+        attrs,
+    ):
+        """拒绝倒置的金额和日期范围，避免错误条件被静默忽略。"""
+
+        # 不能使用真假判断，金额0.00也需要进行范围校验。
+        ranges = (
+            ("min_target_amount", "max_target_amount", "目标金额下限不能大于上限"),
+            ("min_current_amount", "max_current_amount", "已存金额下限不能大于上限"),
+            ("deadline_start", "deadline_end", "开始截止日期不能晚于结束截止日期"),
+        )
+        errors = {}
+        for lower, upper, message in ranges:
+            if lower in attrs and upper in attrs and attrs[lower] > attrs[upper]:
+                errors[upper] = message
+        if errors:
+            raise serializers.ValidationError(errors)
+        return attrs
 
 
 class SavingsGoalCreateSerializer(serializers.Serializer):
@@ -115,6 +205,29 @@ class SavingsGoalSerializer(serializers.ModelSerializer):
     # 剩余需要储蓄金额。
     remaining_amount = serializers.SerializerMethodField()
 
+    # 逾期是展示标记，status与status_display保留原有业务状态。
+    is_overdue = serializers.SerializerMethodField()
+    overdue_days = serializers.SerializerMethodField()
+    display_status = serializers.SerializerMethodField()
+    display_status_text = serializers.SerializerMethodField()
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # 同一批列表按相同的Django本地日期判断，避免跨午夜逐条变化。
+        self.today = self.context.get("today") or timezone.localdate()
+
+    def get_is_overdue(self, obj):
+        return goal_overdue_days(obj, self.today) > 0
+
+    def get_overdue_days(self, obj):
+        return goal_overdue_days(obj, self.today)
+
+    def get_display_status(self, obj):
+        return "overdue" if self.get_is_overdue(obj) else obj.status
+
+    def get_display_status_text(self, obj):
+        return "已逾期" if self.get_is_overdue(obj) else obj.get_status_display()
+
     class Meta:
         model = SavingsGoal
 
@@ -131,6 +244,10 @@ class SavingsGoalSerializer(serializers.ModelSerializer):
             "note",
             "status",
             "status_display",
+            "is_overdue",
+            "overdue_days",
+            "display_status",
+            "display_status_text",
             "created_at",
             "updated_at",
         ]

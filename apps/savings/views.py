@@ -7,6 +7,7 @@ from common.response import ApiResponse
 from .serializers import (
     SavingsDepositSerializer,
     SavingsGoalCreateSerializer,
+    SavingsGoalListQuerySerializer,
     SavingsGoalSerializer,
     SavingsGoalUpdateSerializer,
     SavingsRecordSerializer,
@@ -34,9 +35,15 @@ class SavingsGoalListCreateView(APIView):
         获取储蓄目标列表。
         """
 
-        # 调用 Service 查询当前用户目标。
+        # 校验可选展示状态，错误状态返回统一400响应。
+        # 转为普通字典，避免DRF按HTML表单规则将已传空金额/日期当作未传。
+        query_serializer = SavingsGoalListQuerySerializer(data=request.query_params.dict())
+        query_serializer.is_valid(raise_exception=True)
+
+        # 用户身份只来自登录凭证，筛选不会扩大到其他用户或已删除目标。
         goals = SavingsGoalService.get_goal_list(
             user=request.user,
+            query_params=query_serializer.validated_data,
         )
 
         # 序列化结果。

@@ -6,6 +6,48 @@ from rest_framework import serializers
 from .models import Account, AccountBalanceAdjustment, Transfer
 
 
+class AccountListQuerySerializer(serializers.Serializer):
+    """
+    账户列表筛选参数序列化器。
+
+    所有条件均为选填；未传条件时保持原有账户列表行为。
+    多个条件同时传入时按交集筛选，不允许通过参数改变所属用户。
+    """
+
+    # 根据账户名称进行模糊搜索，自动去除首尾空格。
+    # 空关键字等同于不按名称筛选。
+    keyword = serializers.CharField(
+        max_length=50,
+        required=False,
+        allow_blank=True,
+        trim_whitespace=True,
+        error_messages={
+            "max_length": "账户名称搜索关键字不能超过50个字符",
+        },
+    )
+
+    # 按具体账户类型筛选；bank为储蓄卡，不包含credit_card。
+    account_type = serializers.ChoiceField(
+        choices=Account.AccountType.choices,
+        required=False,
+        error_messages={
+            "invalid_choice": "账户类型不正确",
+        },
+    )
+
+    # 未传时同时返回启用、停用账户；false明确表示只查询停用账户。
+    is_active = serializers.BooleanField(
+        required=False,
+        error_messages={"invalid": "启用状态必须为true或false"},
+    )
+
+    # 未传时不限制默认状态；false表示只查询非默认账户。
+    is_default = serializers.BooleanField(
+        required=False,
+        error_messages={"invalid": "默认账户状态必须为true或false"},
+    )
+
+
 # 定义创建账户序列化器。
 class AccountCreateSerializer(serializers.Serializer):
     """
@@ -434,6 +476,21 @@ class TransferSerializer(serializers.ModelSerializer):
         read_only=True,
     )
 
+    # 四个快照值齐全时才表示具有完整历史余额；零余额也属于有效数据。
+    has_balance_snapshot = serializers.SerializerMethodField()
+
+    def get_has_balance_snapshot(self, obj):
+        """区分旧记录缺失快照与真实零余额，不读取账户的当前余额。"""
+        return all(
+            value is not None
+            for value in (
+                obj.source_balance_before,
+                obj.source_balance_after,
+                obj.target_balance_before,
+                obj.target_balance_after,
+            )
+        )
+
     class Meta:
         model = Transfer
 
@@ -445,6 +502,12 @@ class TransferSerializer(serializers.ModelSerializer):
             "target_account_name",
             "amount",
             "fee",
+            # 固定的转账历史快照，后续账户余额变化不影响这四个值。
+            "source_balance_before",
+            "source_balance_after",
+            "target_balance_before",
+            "target_balance_after",
+            "has_balance_snapshot",
             "transfer_time",
             "note",
             "status",

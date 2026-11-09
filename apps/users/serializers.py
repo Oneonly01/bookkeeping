@@ -7,7 +7,10 @@ from rest_framework import serializers
 from apps.accounts.services import AccountService
 from apps.users.models import UserProfile
 from common.exceptions import BusinessException
-from rest_framework_simplejwt.exceptions import TokenError
+from rest_framework_simplejwt.exceptions import AuthenticationFailed, TokenError
+from rest_framework_simplejwt.serializers import TokenRefreshSerializer as JWTTokenRefreshSerializer
+from rest_framework_simplejwt.settings import api_settings as jwt_settings
+from rest_framework_simplejwt.utils import get_md5_hash_password
 from rest_framework_simplejwt.tokens import RefreshToken
 
 # 导入 Django 官方密码强度校验器。
@@ -135,34 +138,30 @@ class RefreshTokenSerializer(serializers.Serializer):
     )
 
     def validate(self, attrs):
-        """
-        校验并刷新 Token。
-        """
-
-        refresh_token = attrs["refresh_token"]
-
+        """校验账号及改密撤销状态，再由 SimpleJWT 完成轮换和黑名单登记。"""
         try:
-            # 将字符串形式的 Refresh Token
-            # 转换为 SimpleJWT 的 Token 对象。
-            refresh = RefreshToken(refresh_token)
+            refresh = RefreshToken(attrs["refresh_token"])
+            user_id = refresh.payload.get(jwt_settings.USER_ID_CLAIM)
+            if user_id is None:
+                raise TokenError("Missing user claim")
+            user = User.objects.get(**{jwt_settings.USER_ID_FIELD: user_id})
+            if not jwt_settings.USER_AUTHENTICATION_RULE(user):
+                raise TokenError("Inactive user")
+            if jwt_settings.CHECK_REVOKE_TOKEN and refresh.payload.get(
+                jwt_settings.REVOKE_TOKEN_CLAIM
+            ) != get_md5_hash_password(user.password):
+                raise TokenError("Password changed")
 
-            # 生成新的 Access Token。
-            access_token = str(refresh.access_token)
+            tokens = JWTTokenRefreshSerializer().validate(
+                {"refresh": attrs["refresh_token"]}
+            )
+        except (TokenError, AuthenticationFailed, User.DoesNotExist, ValueError, TypeError):
+            raise BusinessException("Refresh Token 无效或已过期，请重新登录") from None
 
-            attrs["access_token"] = access_token
-
-            # 当前配置开启：
-            # ROTATE_REFRESH_TOKENS = True
-            #
-            # 因此刷新后同时返回新的 Refresh Token。
-            attrs["refresh_token"] = str(refresh)
-
-        except TokenError:
-            # Token 过期、格式错误或签名无效，
-            # 统一作为业务异常返回。
-            raise BusinessException("Refresh Token 无效或已过期")
-
-        return attrs
+        return {
+            "access_token": tokens["access"],
+            "refresh_token": tokens.get("refresh", attrs["refresh_token"]),
+        }
 
 
 # 获取当前项目实际使用的用户模型。

@@ -13,6 +13,7 @@ from common.utils.comparison import calculate_amount_comparison
 from apps.categories.models import Category
 
 from .models import Transaction, TransactionImage
+from .constants import MAX_TRANSACTION_IMAGES
 from apps.preferences.services import PreferenceService
 
 
@@ -1539,9 +1540,11 @@ class TransactionService:
             "expense_trend": expense_comparison["trend"],
         }
 
-        # 账户余额使用独立快照，与收入减支出的月结余分别返回。
-        # 历史月份缺少快照时返回无数据，不根据账单反推或假设为零。
-        asset_comparison = AssetSnapshotService.get_comparison(user, month=month)
+        # 账户余额始终使用此时的实时净余额，不受month筛选影响。
+        # 环比基准固定为实际当前月份的上月末快照。
+        # 例如11月查看10月收支，余额仍显示11月当前值，并与10月末比较。
+        # 没有上月末快照时只缺少环比，当前余额仍正常返回。
+        asset_comparison = AssetSnapshotService.get_comparison(user)
 
         # ==========================================
         # 返回统计结果
@@ -1566,7 +1569,7 @@ class TransactionService:
             },
             # 环比数据。
             "comparison": comparison,
-            # 所选月份账户净余额相对上月末的变化。
+            # 当前实时账户净余额相对实际上月末的变化，与所选收支月份独立。
             "asset_comparison": asset_comparison,
         }
 
@@ -1743,6 +1746,8 @@ class TransactionService:
         """
         上传账单图片。
 
+        每笔账单累计最多9张，删除后可补传；单张大小由Serializer校验。
+
         规则：
         1. 账单必须属于当前用户；
         2. 账单必须处于正常状态；
@@ -1764,6 +1769,23 @@ class TransactionService:
 
         except Transaction.DoesNotExist:
             raise BusinessException("账单不存在")
+
+        # ==========================================
+        # 每笔账单的累计凭证数量校验
+        # ==========================================
+
+        # 上传与删除均先锁定同一账单，串行处理同一账单的凭证变更。
+        # 图片也使用锁定读取，避免外层事务旧读视图导致数量判断过期。
+        # 最多读取上限数量的ID，超限时不保存文件、不创建图片记录。
+        existing_image_ids = list(
+            TransactionImage.objects.select_for_update()
+            .filter(transaction=transaction_record)
+            .values_list("id", flat=True)[:MAX_TRANSACTION_IMAGES]
+        )
+        if len(existing_image_ids) >= MAX_TRANSACTION_IMAGES:
+            raise BusinessException(
+                f"每笔账单最多上传{MAX_TRANSACTION_IMAGES}张凭证，请删除已有凭证后再上传"
+            )
 
         # ==========================================
         # 创建账单图片记录
@@ -1846,7 +1868,7 @@ class TransactionService:
 
         规则：
         1. 账单必须属于当前用户；
-        2. 账单必须处于正常状态；
+        2. 正常及已删除账单均可只读查看，软删除保留原始凭证；
         3. 只返回该账单自己的图片。
         """
 
@@ -1858,7 +1880,7 @@ class TransactionService:
             transaction_record = Transaction.objects.get(
                 id=transaction_id,
                 user=user,
-                status=Transaction.Status.NORMAL,
+                status__in=[Transaction.Status.NORMAL, Transaction.Status.DELETED],
             )
 
         except Transaction.DoesNotExist:

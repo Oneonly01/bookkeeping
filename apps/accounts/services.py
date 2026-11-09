@@ -19,6 +19,44 @@ class AccountService:
     """
 
     @staticmethod
+    def get_account_list(user, query_params: dict):
+        """
+        查询当前用户未删除的账户，支持名称、类型及状态筛选。
+
+        query_params为Serializer校验后的数据，不直接使用原始查询字符串。
+        不传筛选条件时返回全部未删除账户，保留原有排序和列表结构。
+        """
+
+        # ======================================
+        # 固定用户及删除状态，防止越权和已删除账户泄露
+        # ======================================
+        accounts = Account.objects.filter(
+            user=user,
+            is_deleted=False,
+        )
+
+        # 账户名称模糊查询。
+        keyword = query_params.get("keyword")
+        if keyword:
+            accounts = accounts.filter(name__icontains=keyword)
+
+        # 按具体账户类型查询，多个筛选条件按AND组合。
+        account_type = query_params.get("account_type")
+        if account_type:
+            accounts = accounts.filter(account_type=account_type)
+
+        # 必须判断字段是否传入，不能用if value判断。
+        # 否则false会被当成未传，导致停用、非默认账户筛选失效。
+        if "is_active" in query_params:
+            accounts = accounts.filter(is_active=query_params["is_active"])
+
+        if "is_default" in query_params:
+            accounts = accounts.filter(is_default=query_params["is_default"])
+
+        # 沿用原有排序：排序值越小越靠前，相同排序值按ID排列。
+        return accounts.order_by("sort_order", "id")
+
+    @staticmethod
     @transaction.atomic
     def create_account(
         user,
@@ -546,6 +584,11 @@ class AccountService:
         if not is_credit_card and is_balance_insufficient:
             raise BusinessException("转出账户余额不足")
 
+        # 两个账户均已加行锁，在实际变更前保存本次操作的余额。
+        # 使用执行时余额，不根据用户填写的transfer_time反推历史余额。
+        source_balance_before = source_account.balance
+        target_balance_before = target_account.balance
+
         # 转出账户扣款。
         source_account.balance -= total_deduction
 
@@ -573,6 +616,11 @@ class AccountService:
             target_account=target_account,
             amount=amount,
             fee=fee,
+            # 历史余额与转账记录同事务保存，任何一步失败都会一起回滚。
+            source_balance_before=source_balance_before,
+            source_balance_after=source_account.balance,
+            target_balance_before=target_balance_before,
+            target_balance_after=target_account.balance,
             transfer_time=validated_data["transfer_time"],
             note=validated_data.get(
                 "note",
@@ -795,6 +843,7 @@ class AccountService:
         )
 
         # 转账记录执行逻辑删除。
+        # 保留原转账前后余额快照，撤销不会改写原操作历史。
         transfer.status = Transfer.Status.DELETED
 
         # 保存状态。

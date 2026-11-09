@@ -111,6 +111,7 @@ class RefreshTokenView(APIView):
     #
     # 因此这里必须允许匿名访问。
     permission_classes = [AllowAny]
+    authentication_classes = []
 
     # 定义 POST 请求处理方法。
     def post(self, request):
@@ -147,8 +148,7 @@ class RefreshTokenView(APIView):
                 "access_token": (serializer.validated_data["access_token"]),
                 # 获取 Refresh Token。
                 #
-                # 如果以后开启 Refresh Token 轮换，
-                # 这里可以返回新的 Refresh Token。
+                # 开启轮换时返回新令牌，旧令牌已加入黑名单。
                 "refresh_token": (serializer.validated_data["refresh_token"]),
                 # Token 类型固定使用 Bearer。
                 #

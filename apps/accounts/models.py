@@ -415,6 +415,34 @@ class Transfer(models.Model):
         db_comment="本次转账产生的手续费",
     )
 
+    # ======================================
+    # 本次转账实际执行时的账户余额快照
+    # ======================================
+    # 余额从已加锁账户中读取，与扣款、入账在同一事务内保存。
+    # 后续记账、余额校准或撤销转账不覆盖这四个历史值。
+    # 旧记录没有历史快照，必须保留NULL，不用当前余额或零冒充。
+
+    source_balance_before = models.DecimalField(
+        max_digits=14, decimal_places=2, null=True, blank=True,
+        verbose_name="转出账户转账前余额",
+        db_comment="本次转账执行前的转出账户余额，历史记录可能为空",
+    )
+    source_balance_after = models.DecimalField(
+        max_digits=14, decimal_places=2, null=True, blank=True,
+        verbose_name="转出账户转账后余额",
+        db_comment="本次转账执行后的转出账户余额，已扣除转账金额和手续费",
+    )
+    target_balance_before = models.DecimalField(
+        max_digits=14, decimal_places=2, null=True, blank=True,
+        verbose_name="转入账户转账前余额",
+        db_comment="本次转账执行前的转入账户余额，历史记录可能为空",
+    )
+    target_balance_after = models.DecimalField(
+        max_digits=14, decimal_places=2, null=True, blank=True,
+        verbose_name="转入账户转账后余额",
+        db_comment="本次转账执行后的转入账户余额，增加本次转账金额",
+    )
+
     # 转账时间。
     transfer_time = models.DateTimeField(
         verbose_name="转账时间",

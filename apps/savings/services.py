@@ -1,9 +1,10 @@
 from django.db import transaction
 from decimal import Decimal
-from django.db.models import Sum
+from django.db.models import Q, Sum
 from common.exceptions.business import BusinessException
 
 from .models import SavingsGoal, SavingsRecord
+from .overdue import overdue_goal_filter
 
 
 class SavingsGoalService:
@@ -66,6 +67,7 @@ class SavingsGoalService:
     @staticmethod
     def get_goal_list(
         user,
+        query_params=None,
     ):
         """
         获取当前用户储蓄目标列表。
@@ -76,13 +78,40 @@ class SavingsGoalService:
         2. 不返回已逻辑删除目标。
         """
 
-        return SavingsGoal.objects.filter(
-            user=user,
-            is_deleted=False,
-        ).order_by(
-            "-created_at",
-            "-id",
-        )
+        goals = SavingsGoal.objects.filter(user=user, is_deleted=False)
+
+        # 逾期仅为展示状态，按当前日期直接筛选，不批量改写数据库。
+        # 已暂停、已完成目标不归入逾期；active只返回未逾期进行中。
+        query_params = query_params or {}
+        status = query_params.get("status")
+        if status == "overdue":
+            goals = goals.filter(overdue_goal_filter())
+        elif status == SavingsGoal.Status.ACTIVE:
+            goals = goals.filter(status=status).exclude(overdue_goal_filter())
+        elif status:
+            goals = goals.filter(status=status)
+
+        # 名称或备注命中任意一项即可；与状态、金额和日期条件取交集。
+        keyword = query_params.get("keyword")
+        if keyword:
+            goals = goals.filter(Q(name__icontains=keyword) | Q(note__icontains=keyword))
+
+        # 仅使用固定字段映射，客户端不能指定任意查询字段或所属用户。
+        # 按字段是否传入判断，确保max_current_amount=0可以查询尚未存钱的目标。
+        range_filters = {
+            "min_target_amount": "target_amount__gte",
+            "max_target_amount": "target_amount__lte",
+            "min_current_amount": "current_amount__gte",
+            "max_current_amount": "current_amount__lte",
+            "deadline_start": "deadline__gte",
+            "deadline_end": "deadline__lte",
+        }
+        for parameter, lookup in range_filters.items():
+            if parameter in query_params:
+                goals = goals.filter(**{lookup: query_params[parameter]})
+
+        # 不改变数组结构及默认顺序，兼容现有前端和首页调用。
+        return goals.order_by("-created_at", "-id")
 
     @staticmethod
     def get_goal_detail(
@@ -686,6 +715,9 @@ class SavingsGoalService:
 
         active_count = goals.filter(status=(SavingsGoal.Status.ACTIVE)).count()
 
+        # 保留active_count原有口径，逾期数量是其中的子集，不重复计入总数。
+        overdue_count = goals.filter(overdue_goal_filter()).count()
+
         paused_count = goals.filter(status=(SavingsGoal.Status.PAUSED)).count()
 
         completed_count = goals.filter(status=(SavingsGoal.Status.COMPLETED)).count()
@@ -734,6 +766,7 @@ class SavingsGoalService:
         return {
             "total_count": total_count,
             "active_count": active_count,
+            "overdue_count": overdue_count,
             "paused_count": paused_count,
             "completed_count": completed_count,
             "total_target_amount": (f"{total_target_amount:.2f}"),
